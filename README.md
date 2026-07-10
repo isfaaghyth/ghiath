@@ -298,9 +298,9 @@ Ingress map (see `caddy/Caddyfile`):
 | Hostname | Upstream | Notes |
 | --- | --- | --- |
 | `example.com` | static placeholder | nothing else live here yet |
-| `hermes.example.com` | `host.docker.internal:8642` | hermes runs on the host, behind basic_auth |
-| `n8n.example.com` | `n8n:5678` | automation UI and webhooks, behind basic_auth |
-| `router.example.com` | `keirouter:20180` | KeiRouter API and dashboard, behind basic_auth |
+| `hermes.example.com` | `host.docker.internal:8642` | hermes runs on the host; uses its own gateway auth |
+| `n8n.example.com` | `n8n:5678` | automation UI and webhooks; uses n8n's owner-account login |
+| `router.example.com` | `keirouter:20180` | dashboard behind basic_auth; the `/v1` API is exempt so agents can use Bearer keys |
 | `couch.example.com` | `couchdb:5984` | LiveSync endpoint, uses CouchDB's own auth |
 
 Caddy issues and renews Let's Encrypt certificates automatically. Every other

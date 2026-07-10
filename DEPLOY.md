@@ -9,10 +9,14 @@ Nothing here is safe to skip if the box is reachable from the public internet.
 Only Caddy is public (ports 80 and 443).
 Every other service binds to `127.0.0.1` inside the VPS, so the only way in
 from outside is through a Caddy site block.
-The sensitive dashboards (n8n, KeiRouter, hermes) sit behind HTTP basic_auth in
-Caddy, layered on top of each service's own login.
-CouchDB is reached through Caddy too, but authenticates with its own user and
-password because the Obsidian LiveSync plugin needs to send those directly.
+Each service provides its own authentication: n8n's owner account, the KeiRouter
+dashboard login, hermes's gateway auth, and CouchDB's user/password.
+Caddy adds HTTP basic_auth only in front of the KeiRouter dashboard, as an extra
+human-facing gate; the KeiRouter `/v1` API is exempt so agents can authenticate
+with their Bearer virtual key.
+basic_auth is deliberately not placed in front of n8n (it breaks the SPA and
+re-prompts on navigation) or the hermes/KeiRouter APIs (it collides with Bearer
+tokens).
 Qdrant is never exposed; reach it over an SSH tunnel when you need it.
 
 ## 1. Provision the box
@@ -105,8 +109,8 @@ docker compose logs -f caddy
 
 ## 5. First-load hardening of each service
 
-- **n8n**: open `https://n8n.ghiath.id`, get past basic_auth, then immediately
-  create the owner account. Until that account exists, do not share the URL.
+- **n8n**: open `https://n8n.ghiath.id` and immediately create the owner
+  account. Until that account exists, do not share the URL.
 - **KeiRouter**: open `https://router.ghiath.id`, get past basic_auth, log in
   with the default password `keirouter`, and change it at once. Add your
   provider keys here.

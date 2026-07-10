@@ -4,20 +4,17 @@
 #     docker compose --profile prod up -d
 #
 # Caddy obtains and renews Let's Encrypt certificates automatically the first
-# time each hostname is requested. No certbot, no cron job. Certificates persist
-# in the named "caddy_data" volume across restarts.
+# time each hostname is requested. Certificates persist in the "caddy_data"
+# volume across restarts.
 #
-# Prerequisite: DNS A records must point at the VPS public IP for every host
-# below (ghiath.id, hermes, n8n, router, couch).
-#
-# Auth model: only Caddy (80/443) is public. Every upstream service binds to
-# 127.0.0.1 in docker-compose.yml, so the ONLY way to reach them from outside
-# is through these blocks. Sensitive dashboards sit behind basic_auth, using
-# credentials from .env (BASIC_AUTH_USER / BASIC_AUTH_HASH). Generate the hash:
-#     docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
+# Auth model: only Caddy (80/443) is public; every upstream binds to 127.0.0.1.
+# Each app provides its own authentication (n8n owner account, KeiRouter
+# dashboard login, hermes gateway auth), so basic_auth is applied ONLY where a
+# human-facing dashboard benefits from an extra gate - not in front of full web
+# apps or API endpoints, where it causes repeated prompts (SPA/websocket) or
+# collides with Bearer tokens (API calls).
 
 {
-	# Account email for Let's Encrypt (from .env).
 	email {$ACME_EMAIL}
 }
 
@@ -28,40 +25,43 @@
 	}
 }
 
-# Root domain: static placeholder for now, nothing else is live here yet.
+# Root domain: static placeholder for now.
 ghiath.id {
 	respond "hello world"
 }
 
-# hermes-agent runs on the HOST (not in this compose file). From inside the
-# Caddy container the host is reachable as host.docker.internal, mapped to the
-# host gateway in docker-compose.yml. hermes enforces its own auth on a public
-# bind; basic_auth here is a second layer. Gateway default port is 8642.
+# hermes gateway - OpenAI-compatible API on the host (default port 8642).
+# No basic_auth: it is an API endpoint (Bearer tokens would collide with Basic
+# auth), and hermes enforces its own auth on a public bind.
 hermes.ghiath.id {
-	import protected
 	reverse_proxy host.docker.internal:8642
 }
 
-# n8n has its own owner-account login. basic_auth is an extra gate in front of
-# the editor UI. Webhook endpoints are also behind it - if you expose public
-# webhooks (Telegram/Discord), move them to a dedicated unprotected path or a
-# separate hostname and validate with a shared secret instead.
+# n8n - has its own owner-account login. No basic_auth: layering it over n8n's
+# SPA and websocket connection causes the auth prompt to reappear as you
+# navigate.
 n8n.ghiath.id {
-	import protected
 	reverse_proxy n8n:5678
 }
 
-# KeiRouter dashboard + API. Public but behind basic_auth (on top of KeiRouter's
-# own dashboard login), per request. Serves both API and dashboard on 20180.
+# KeiRouter - the /v1 API must NOT sit behind basic_auth, because agents
+# authenticate with an Authorization: Bearer <virtual-key> header that collides
+# with Basic auth. The dashboard and everything else stays behind basic_auth for
+# humans; KeiRouter's own virtual keys protect the API.
 router.ghiath.id {
-	import protected
-	reverse_proxy keirouter:20180
+	@api path /v1 /v1/*
+	handle @api {
+		reverse_proxy keirouter:20180
+	}
+	handle {
+		import protected
+		reverse_proxy keirouter:20180
+	}
 }
 
-# CouchDB for Obsidian LiveSync (desktop + mobile). No basic_auth here: the
-# LiveSync plugin authenticates with the CouchDB user/password directly, and a
-# second basic_auth layer would break it. CouchDB's own require_valid_user is
-# the auth layer; keep COUCHDB_PASSWORD strong.
+# CouchDB for Obsidian LiveSync. No basic_auth: the LiveSync plugin
+# authenticates with CouchDB's own user/password, and a second layer would
+# break it.
 couch.ghiath.id {
 	reverse_proxy couchdb:5984
 }
