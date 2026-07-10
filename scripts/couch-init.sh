@@ -8,8 +8,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# shellcheck disable=SC1091
-set -a; . ./.env; set +a
+# Read only the two values we need, without sourcing .env. Values like the
+# bcrypt BASIC_AUTH_HASH contain '$', which would break `source` under set -u.
+getenv() { grep -E "^$1=" .env | head -n1 | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//"; }
+COUCHDB_USER="$(getenv COUCHDB_USER)"
+COUCHDB_PASSWORD="$(getenv COUCHDB_PASSWORD)"
 
 HOST="${COUCH_HOST:-http://localhost:5984}"
 AUTH=(-u "${COUCHDB_USER}:${COUCHDB_PASSWORD}")

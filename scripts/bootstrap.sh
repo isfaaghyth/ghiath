@@ -35,7 +35,14 @@ else
 	echo "[bootstrap] .env already exists, leaving it untouched"
 fi
 
-# --- 2. bring up ------------------------------------------------------------
+# --- 2. prepare bind-mount data dirs ----------------------------------------
+# Create these before `up` so they are owned by the invoking user, not root.
+# n8n and keirouter run as non-root and cannot write into a root-owned dir
+# (Docker Desktop hides this on macOS; a real Linux host does not). On the
+# typical Ubuntu VPS the login user is uid 1000, which is what these images use.
+mkdir -p n8n keirouter couchdb qdrant
+
+# --- 3. bring up ------------------------------------------------------------
 if [ "$MODE" = "prod" ]; then
 	echo "[bootstrap] starting stack in PROD mode (with Caddy)"
 	docker compose --profile prod up -d --build
@@ -44,23 +51,27 @@ else
 	docker compose up -d --build
 fi
 
-# --- 3. wait for health -----------------------------------------------------
+# --- 4. wait for health -----------------------------------------------------
 echo "[bootstrap] waiting for services to answer..."
 wait_http() {
-	local name="$1" url="$2" tries=60
-	until curl -fsS -o /dev/null "$url" 2>/dev/null; do
+	local name="$1" url="$2" tries=60 code
+	while true; do
+		# Any HTTP response means the service is up. CouchDB returns 401 once
+		# require_valid_user is enabled, which is healthy - only a refused
+		# connection yields 000.
+		code=$(curl -s -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)
+		[ "$code" != "000" ] && { echo "[bootstrap] $name is up ($code)"; break; }
 		tries=$((tries - 1))
 		[ "$tries" -le 0 ] && { echo "[bootstrap] TIMEOUT waiting for $name ($url)"; return 1; }
 		sleep 2
 	done
-	echo "[bootstrap] $name is up"
 }
 wait_http "qdrant"    "http://localhost:6333/healthz"
 wait_http "couchdb"   "http://localhost:5984/"
 wait_http "keirouter" "http://localhost:20180/"
 wait_http "n8n"       "http://localhost:5678/"
 
-# --- 4. couchdb init for LiveSync ------------------------------------------
+# --- 5. couchdb init for LiveSync ------------------------------------------
 echo "[bootstrap] initializing CouchDB for Obsidian LiveSync"
 ./scripts/couch-init.sh
 

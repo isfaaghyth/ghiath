@@ -6,8 +6,11 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
-# shellcheck disable=SC1091
-set -a; . ./.env 2>/dev/null || true; set +a
+# Read only what we need instead of sourcing .env (bcrypt hashes contain '$'
+# and would break a naive `source`).
+getenv() { grep -E "^$1=" .env 2>/dev/null | head -n1 | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//"; }
+COUCHDB_USER="$(getenv COUCHDB_USER)"
+COUCHDB_PASSWORD="$(getenv COUCHDB_PASSWORD)"
 
 PASS=0
 FAIL=0
