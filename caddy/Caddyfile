@@ -1,0 +1,67 @@
+# Ghiath - production ingress (VPS only).
+#
+# Used only when Caddy runs under the "prod" compose profile on the VPS:
+#     docker compose --profile prod up -d
+#
+# Caddy obtains and renews Let's Encrypt certificates automatically the first
+# time each hostname is requested. No certbot, no cron job. Certificates persist
+# in the named "caddy_data" volume across restarts.
+#
+# Prerequisite: DNS A records must point at the VPS public IP for every host
+# below (ghiath.id, hermes, n8n, router, couch).
+#
+# Auth model: only Caddy (80/443) is public. Every upstream service binds to
+# 127.0.0.1 in docker-compose.yml, so the ONLY way to reach them from outside
+# is through these blocks. Sensitive dashboards sit behind basic_auth, using
+# credentials from .env (BASIC_AUTH_USER / BASIC_AUTH_HASH). Generate the hash:
+#     docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
+
+{
+	# Account email for Let's Encrypt (from .env).
+	email {$ACME_EMAIL}
+}
+
+# Reusable basic_auth snippet. bcrypt hash comes from the environment.
+(protected) {
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+}
+
+# Root domain: static placeholder for now, nothing else is live here yet.
+ghiath.id {
+	respond "hello world"
+}
+
+# hermes-agent runs on the HOST (not in this compose file). From inside the
+# Caddy container the host is reachable as host.docker.internal, mapped to the
+# host gateway in docker-compose.yml. hermes enforces its own auth on a public
+# bind; basic_auth here is a second layer. Gateway default port is 8642.
+hermes.ghiath.id {
+	import protected
+	reverse_proxy host.docker.internal:8642
+}
+
+# n8n has its own owner-account login. basic_auth is an extra gate in front of
+# the editor UI. Webhook endpoints are also behind it - if you expose public
+# webhooks (Telegram/Discord), move them to a dedicated unprotected path or a
+# separate hostname and validate with a shared secret instead.
+n8n.ghiath.id {
+	import protected
+	reverse_proxy n8n:5678
+}
+
+# KeiRouter dashboard + API. Public but behind basic_auth (on top of KeiRouter's
+# own dashboard login), per request. Serves both API and dashboard on 20180.
+router.ghiath.id {
+	import protected
+	reverse_proxy keirouter:20180
+}
+
+# CouchDB for Obsidian LiveSync (desktop + mobile). No basic_auth here: the
+# LiveSync plugin authenticates with the CouchDB user/password directly, and a
+# second basic_auth layer would break it. CouchDB's own require_valid_user is
+# the auth layer; keep COUCHDB_PASSWORD strong.
+couch.ghiath.id {
+	reverse_proxy couchdb:5984
+}

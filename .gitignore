@@ -1,0 +1,12 @@
+.env
+.env.local
+*.log
+n8n/
+keirouter/
+couchdb/
+qdrant/
+caddy/data/
+obsidian-vault/
+.DS_Store
+.idea/
+.vscode/

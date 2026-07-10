@@ -1,0 +1,119 @@
+{
+  "id": "ghiath-router",
+  "name": "Ghiath Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ghiath",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-in",
+      "name": "Inbound Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ],
+      "webhookId": "ghiath-router"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Decide which agent handles this message and which hermes gateway to call.\n// Adjust the ports to match how you started each profile's gateway, e.g.\n//   ippang gateway start           (default 8642)\n//   PORT=8643 kuli gateway start\n//   PORT=8644 pakprof gateway start\nconst routes = {\n  ippang:  { url: 'http://host.docker.internal:8642/v1/chat/completions', model: 'deepseek/deepseek-v2-flash' },\n  kuli:    { url: 'http://host.docker.internal:8643/v1/chat/completions', model: 'anthropic/claude-opus-4-8' },\n  pakprof: { url: 'http://host.docker.internal:8644/v1/chat/completions', model: 'z-ai/glm-4.6' },\n};\n\nconst body = $input.first().json.body || $input.first().json;\nconst text = (body.message || body.text || '').toString();\nconst lower = text.toLowerCase();\n\nlet agent = 'ippang'; // default: lightweight assistant\nif (/(research|cari|riset|investigate|find out|literature)/.test(lower)) agent = 'pakprof';\nelse if (/(build|code|ngoding|implement|refactor|debug|bug|deploy)/.test(lower)) agent = 'kuli';\n\nconst folder = { ippang: 'scratchpads', kuli: 'projects', pakprof: 'memory' }[agent];\nconst route = routes[agent];\n\n// Instruct the agent to persist its output into its own vault folder.\nconst prompt = `${text}\\n\\nWhen you are done, save a concise note of your result into obsidian-vault/${folder}/ with a descriptive filename.`;\n\nreturn [{ json: { agent, folder, url: route.url, model: route.model, prompt } }];"
+      },
+      "id": "route",
+      "name": "Route To Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, messages: [ { role: 'user', content: $json.prompt } ] }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "call-hermes",
+      "name": "Call Hermes Gateway",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ agent: $('Route To Agent').item.json.agent, reply: $json.choices ? $json.choices[0].message.content : $json }) }}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        920,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Inbound Webhook": {
+      "main": [
+        [
+          {
+            "node": "Route To Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route To Agent": {
+      "main": [
+        [
+          {
+            "node": "Call Hermes Gateway",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Hermes Gateway": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

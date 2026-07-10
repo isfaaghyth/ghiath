@@ -1,0 +1,159 @@
+# Ghiath - Personal Agentic Ecosystem
+#
+# Local-first stack. Bring it up with:
+#   docker compose up -d
+#
+# The caddy service is gated behind the "prod" profile and is NOT started by
+# the plain `up` command. On the VPS, once DNS is pointed at the box, run:
+#   docker compose --profile prod up -d
+#
+# hermes-agent is intentionally NOT in this file. It runs on the host via
+# `hermes gateway start` per profile (default port 8642). See README section
+# "Hermes profiles".
+
+services:
+  # ---------------------------------------------------------------------------
+  # CouchDB - backend for the Obsidian "Self-hosted LiveSync" community plugin.
+  # You still have to install that plugin in Obsidian (desktop AND mobile) and
+  # point it at this instance. See README "Obsidian Live Sync".
+  # ---------------------------------------------------------------------------
+  couchdb:
+    image: couchdb:3
+    container_name: ghiath-couchdb
+    restart: unless-stopped
+    environment:
+      COUCHDB_USER: ${COUCHDB_USER}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
+    ports:
+      # Loopback-only: reachable on localhost (dev) or via SSH tunnel (VPS).
+      # In prod, Caddy proxies it over the compose network at couch.ghiath.id.
+      - "127.0.0.1:5984:5984"
+    volumes:
+      - ./couchdb:/opt/couchdb/data
+
+  # ---------------------------------------------------------------------------
+  # Qdrant - vector DB / semantic search layer over the vault.
+  # 6333 = REST + web dashboard (http://localhost:6333/dashboard), 6334 = gRPC.
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant
+    container_name: ghiath-qdrant
+    restart: unless-stopped
+    ports:
+      # Loopback-only. Qdrant has no auth; never expose it publicly. On the VPS
+      # reach the dashboard via: ssh -L 6333:localhost:6333 user@vps
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - ./qdrant:/qdrant/storage
+
+  # ---------------------------------------------------------------------------
+  # Qdrant indexer - the vault watcher sidecar (Step 4).
+  # A small Python polling script: walks obsidian-vault/, chunks changed .md
+  # files, embeds them locally with fastembed (no external API needed), and
+  # upserts into Qdrant. Deliberately simple; see qdrant-indexer/indexer.py.
+  # ---------------------------------------------------------------------------
+  qdrant-indexer:
+    build: ./qdrant-indexer
+    container_name: ghiath-qdrant-indexer
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: vault
+      VAULT_PATH: /vault
+      POLL_INTERVAL_SECONDS: "30"
+    volumes:
+      - ./obsidian-vault:/vault:ro
+
+  # ---------------------------------------------------------------------------
+  # KeiRouter - self-hosted LLM gateway (cost / key management).
+  # Docker mode serves both the API and the dashboard on 20180.
+  # Default dashboard login password is "keirouter" - change it on first login.
+  # If you ever want to skip this and have agents call providers directly,
+  # comment this service out and set ANTHROPIC_API_KEY / OPENROUTER_API_KEY on
+  # the hermes profiles instead.
+  # ---------------------------------------------------------------------------
+  keirouter:
+    image: ghcr.io/mydisha/keirouter:latest
+    container_name: ghiath-keirouter
+    restart: unless-stopped
+    ports:
+      # Loopback-only. In prod, Caddy proxies it at router.ghiath.id behind
+      # basic_auth (on top of KeiRouter's own dashboard login).
+      - "127.0.0.1:20180:20180"
+    environment:
+      KEIROUTER_DATA__DIR: /data
+      KEIROUTER_SERVER__HOST: 0.0.0.0
+      KEIROUTER_SERVER__PORT: "20180"
+      KEIROUTER_SECURITY__MASTER_KEY: ${KEIROUTER_MASTER_KEY}
+      KEIROUTER_LOG__FORMAT: json
+    volumes:
+      - ./keirouter:/data
+
+  # ---------------------------------------------------------------------------
+  # n8n - the automation / routing nervous system.
+  # Inbound messages (Telegram, Discord, web) hit n8n; it decides which hermes
+  # profile to call, calls it over the local gateway, and logs the result into
+  # the vault. The vault is mounted read/write at /data/obsidian-vault.
+  # ---------------------------------------------------------------------------
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: ghiath-n8n
+    restart: unless-stopped
+    ports:
+      # Loopback-only. Public access is via Caddy at n8n.ghiath.id.
+      - "127.0.0.1:5678:5678"
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_PORT: "5678"
+      # Local defaults; override these in .env on the VPS. n8n's own owner
+      # account (created on first load) is the primary auth layer - create it
+      # immediately after first start.
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      # true in prod (Caddy serves HTTPS), false for plain-http local dev.
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
+      N8N_RUNNERS_ENABLED: "true"
+      GENERIC_TIMEZONE: Asia/Jakarta
+    # Reach the host-only hermes gateway (default 8642) from inside n8n.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./n8n:/home/node/.n8n
+      - ./obsidian-vault:/data/obsidian-vault
+
+  # ---------------------------------------------------------------------------
+  # Caddy - reverse proxy + automatic HTTPS. PROD ONLY.
+  # Not started by `docker compose up -d`. On the VPS (after DNS is set):
+  #   docker compose --profile prod up -d
+  # See caddy/Caddyfile and README section 8.
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2
+    container_name: ghiath-caddy
+    restart: unless-stopped
+    profiles: ["prod"]
+    ports:
+      - "80:80"
+      - "443:443"
+    # Lets the Caddyfile reach the host-only hermes gateway via
+    # host.docker.internal on a Linux VPS (already works on Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Credentials for the basic_auth wrapper in the Caddyfile. Generate the
+      # hash with:  docker run --rm caddy:2 caddy hash-password --plaintext 'yourpass'
+      ACME_EMAIL: ${ACME_EMAIL}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

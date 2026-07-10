@@ -1,0 +1,97 @@
+{
+  "id": "ghiath-vault-watch",
+  "name": "Ghiath Vault Watch",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerOn": "folder",
+        "path": "/data/obsidian-vault",
+        "events": [
+          "add"
+        ],
+        "options": {
+          "usePolling": true,
+          "ignored": "**/.obsidian/**"
+        }
+      },
+      "id": "watch",
+      "name": "Watch Vault",
+      "type": "n8n-nodes-base.localFileTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// A new note landed in the vault. The folder it landed in decides which agent\n// owns it, i.e. which agent should be triggered to act on the handoff.\n//   scratchpads -> ippang, projects -> kuli, memory -> pakprof\nconst routes = {\n  ippang:  { url: 'http://host.docker.internal:8642/v1/chat/completions', model: 'deepseek/deepseek-v2-flash' },\n  kuli:    { url: 'http://host.docker.internal:8643/v1/chat/completions', model: 'anthropic/claude-opus-4-8' },\n  pakprof: { url: 'http://host.docker.internal:8644/v1/chat/completions', model: 'z-ai/glm-4.6' },\n};\nconst ownerByFolder = { scratchpads: 'ippang', projects: 'kuli', memory: 'pakprof' };\n\nconst path = ($input.first().json.path || '').toString();\nif (!path.endsWith('.md')) return [];\n\nconst m = path.match(/obsidian-vault\\/(scratchpads|projects|memory)\\//);\nif (!m) return [];\nconst agent = ownerByFolder[m[1]];\nconst route = routes[agent];\n\n// Path as the agent sees it on the host (agents run on the host, not in n8n).\nconst hostPath = path.replace('/data/obsidian-vault/', 'obsidian-vault/');\nconst prompt = `A new note was placed in your folder: ${hostPath}\\nRead it, act on it, and record your result in your own vault folder. If the task should move to another agent, drop a note in that agent's folder.`;\n\nreturn [{ json: { agent, folder: m[1], url: route.url, model: route.model, prompt, note: hostPath } }];"
+      },
+      "id": "route",
+      "name": "Route By Folder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, messages: [ { role: 'user', content: $json.prompt } ] }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "call-hermes",
+      "name": "Trigger Owning Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Watch Vault": {
+      "main": [
+        [
+          {
+            "node": "Route By Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route By Folder": {
+      "main": [
+        [
+          {
+            "node": "Trigger Owning Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
