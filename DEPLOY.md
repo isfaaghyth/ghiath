@@ -124,25 +124,25 @@ hermes runs on the host, not in Docker. Either install fresh:
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-# recreate ippang / kuli / pakprof and their models (see README step 5)
+# recreate assistant / engineer / researcher and their models (see README step 5)
 ```
 
 or move your existing profiles from your Mac:
 
 ```bash
 # on the Mac
-hermes profile export kuli --output kuli.tar
-scp kuli.tar user@vps:~/
+hermes profile export engineer --output engineer.tar
+scp engineer.tar user@vps:~/
 # on the VPS
-hermes profile import kuli.tar
+hermes profile import engineer.tar
 ```
 
 Then start the gateways you want reachable:
 
 ```bash
-ippang gateway start
-kuli gateway start
-pakprof gateway start
+assistant gateway start
+engineer gateway start
+researcher gateway start
 ```
 
 ## 7. Point Obsidian LiveSync at the VPS
@@ -164,7 +164,7 @@ ssh -L 6333:localhost:6333 user@vps
 ## Ongoing
 
 - Rotate `BASIC_AUTH_HASH` and the KeiRouter dashboard password periodically.
-- Back up `couchdb/`, `n8n/`, and `obsidian-vault/` (or rely on LiveSync
+- Back up `couchdb/`, `n8n/`, and `vault/` (or rely on LiveSync
   replication plus a Git remote for the vault).
 - `docker compose pull && make deploy` to update images; `N8N_ENCRYPTION_KEY`
   must not change across updates.

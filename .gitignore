@@ -1,12 +1,14 @@
 .env
 .env.local
+agents.conf
 *.log
 n8n/
 keirouter/
 couchdb/
 qdrant/
 caddy/data/
-obsidian-vault/
+vault/
+vault-home/
 .DS_Store
 .idea/
 .vscode/

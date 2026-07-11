@@ -36,12 +36,16 @@ keys, memory, and gateway.
 
 | Agent | Role | Owns vault folder |
 | --- | --- | --- |
-| `ippang` | Lightweight personal assistant. Fast, cheap, everyday tasks. | `obsidian-vault/scratchpads/` |
-| `kuli` | Software engineer buddy. Plans with a strong model, executes with a fast one. | `obsidian-vault/projects/` |
-| `pakprof` | Researcher. Deep reading, synthesis, long-term notes. | `obsidian-vault/memory/` |
+| `assistant` | Lightweight everyday assistant. Fast, cheap, everyday tasks. | `vault/scratchpads/` |
+| `engineer` | Software engineer buddy. Plans with a strong model, executes with a fast one. | `vault/projects/` |
+| `researcher` | Researcher. Deep reading, synthesis, long-term notes. | `vault/memory/` |
 
 Each profile's identity, owned folder, and handoff behaviour is also written
 into its `SOUL.md` under `~/.hermes/profiles/<name>/`.
+
+Agent names, models, vault folder names, and ports are configurable: copy
+`agents.conf.example` to `agents.conf` and edit it. The shipped defaults are the
+neutral names above.
 
 ---
 
@@ -64,23 +68,46 @@ structure.
 The handoff mechanism IS the Obsidian vault.
 Each agent owns one folder, and that folder is that agent's inbox and workspace:
 
-- `scratchpads/` - ippang's inbox and workspace.
-- `projects/` - kuli's inbox and workspace.
-- `memory/` - pakprof's inbox and workspace.
+- `scratchpads/` - the assistant's inbox and workspace.
+- `projects/` - the engineer's inbox and workspace.
+- `memory/` - the researcher's inbox and workspace.
 
 **A handoff is a file write.**
 Agent A hands off to agent B by writing a note into agent B's folder.
 An n8n vault-watch workflow (or hermes's own scheduling) notices the new note
 and triggers agent B.
 
+**Every note carries front-matter.**
+This is what makes handoffs loop-safe and powers the Obsidian Bases views on
+the dashboard.
+Each Markdown note an agent writes MUST begin with:
+
+```
+---
+type: task        # task | brief | result | note
+status: open      # open | doing | done
+owner: <agent>    # the agent who should act next
+from: <agent>     # who created the note
+created: YYYY-MM-DD
+tags: []
+---
+```
+
+The vault-watch workflow only triggers on notes whose `status` is `open`.
+An agent's own output is written as `type: result` with `status: done`, so it
+never re-triggers itself.
+When an agent picks up an open note it sets `status: doing`, then `done` when
+finished.
+A note with no front-matter is treated as a human-created open task.
+
 Example flow:
 
-1. ippang receives a vague request and writes a research brief into `memory/`.
-2. The vault-watch workflow notices the new note and triggers pakprof.
-3. pakprof researches, writes its findings into `memory/`, and drops a note
+1. The assistant receives a vague request and writes a research brief into `memory/`.
+2. The vault-watch workflow notices the new note and triggers the researcher.
+3. The researcher researches, writes its findings into `memory/`, and drops a note
    into `projects/` when something needs to be built.
-4. The vault-watch workflow notices that note and triggers kuli.
-5. kuli plans and implements, writing progress into `projects/`.
+4. The vault-watch workflow notices that note and triggers the engineer.
+5. The engineer plans and implements, writing progress into `projects/`.
 
 Keep handoff notes plain and self-contained.
 The note itself is the contract: state what you did, what you need, and which
@@ -97,9 +124,9 @@ searchable by every agent.
 Each hermes profile has its own skills directory:
 
 ```
-~/.hermes/profiles/ippang/skills/
-~/.hermes/profiles/kuli/skills/
-~/.hermes/profiles/pakprof/skills/
+~/.hermes/profiles/assistant/skills/
+~/.hermes/profiles/engineer/skills/
+~/.hermes/profiles/researcher/skills/
 ```
 
 Before starting a task, check whether a relevant skill exists for the active
@@ -118,7 +145,7 @@ directory, because each agent is an isolated hermes profile.
 ## 6. Secrets
 
 - `.env` and all runtime data folders (`n8n/`, `keirouter/`, `couchdb/`,
-  `qdrant/`, `caddy/data/`, `obsidian-vault/`) are gitignored.
+  `qdrant/`, `caddy/data/`, `vault/`) are gitignored.
 - Never commit real keys.
 - `.env.example` is the template.
   Copy it to `.env` and fill in real values locally.
@@ -129,14 +156,23 @@ directory, because each agent is an isolated hermes profile.
 
 ## 7. Dashboard and Tasks
 
-The vault dashboard lives at `obsidian-vault/000-Dashboard.md` and uses the
-Obsidian Tasks plugin.
-When you add a task anywhere in the vault, use this syntax so it shows up on the
-dashboard:
+The vault dashboard lives at `vault/000-Dashboard.md`.
+It is intentionally lightweight: a quick-capture area plus embedded Obsidian
+Bases views.
+The observability comes from the Bases, not from the note itself, so you rarely
+edit the dashboard by hand.
 
-```
-- [ ] task description due: YYYY-MM-DD
-```
+Two Bases are seeded alongside it:
+
+- `tasks.base` - every note with `type: task` and `status` not `done`, i.e. the
+  open work across `scratchpads/`, `projects/`, and `memory/`.
+- `activity.base` - everything the agents have produced (anything that is not a
+  plain `note`), newest first.
+
+Both query the front-matter defined in section 4, so the single requirement is
+that every note carries that front-matter.
+There is no separate task syntax to remember: `status` and `type` in the
+front-matter are what the Bases read.
 
 ---
 

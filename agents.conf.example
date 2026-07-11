@@ -1,0 +1,65 @@
+# Ghiath - agent configuration (template).
+#
+# Copy this to agents.conf and edit it. agents.conf is gitignored, so your
+# personal agent names and model choices never land in the public repo:
+#
+#   cp agents.conf.example agents.conf
+#
+# This file is sourced (not parsed) by scripts/hermes.sh, so it is plain shell:
+# NAME=value, no spaces around '='. Anything you set here overrides the
+# defaults baked into the scripts. Secrets stay in .env, not here.
+#
+# There are two independent "sides", each optional to customize:
+#   - The primary side: a small team of role agents (assistant, engineer,
+#     researcher) that hand off to each other through a shared vault.
+#   - The home side: a single, isolated everyday assistant with its own vault
+#     and no handoffs. Enable it with ENABLE_HOME=1.
+
+# ---------------------------------------------------------------------------
+# Primary side - the role-agent team.
+# ---------------------------------------------------------------------------
+
+# The Obsidian vault folder (relative to the repo root) this side reads/writes,
+# and the Qdrant collection its indexer uses.
+PRIMARY_VAULT="vault"
+PRIMARY_COLLECTION="vault"
+
+# Each agent: NAME, the MODEL slug KeiRouter serves, the vault subfolder it owns
+# (its inbox + workspace), and the gateway PORT it listens on. Rename freely;
+# the name becomes that profile's CLI alias command.
+ASSISTANT_NAME="assistant"
+ASSISTANT_MODEL="deepseek/deepseek-v2-flash"
+ASSISTANT_FOLDER="scratchpads"
+ASSISTANT_PORT="8642"
+
+ENGINEER_NAME="engineer"
+ENGINEER_MODEL="anthropic/claude-opus-4-8"        # orchestrator, plans
+ENGINEER_SUBAGENT_MODEL="anthropic/claude-sonnet-5"  # subagents, execute
+ENGINEER_FOLDER="projects"
+ENGINEER_PORT="8643"
+
+RESEARCHER_NAME="researcher"
+RESEARCHER_MODEL="z-ai/glm-4.6"
+RESEARCHER_FOLDER="memory"
+RESEARCHER_PORT="8644"
+
+# Which agent is the Telegram front door for this side (must match one of the
+# NAME values above). Its bot token comes from TELEGRAM_BOT_TOKEN in .env.
+PRIMARY_TELEGRAM_AGENT="$ASSISTANT_NAME"
+
+# ---------------------------------------------------------------------------
+# Home side - a single, isolated everyday assistant (optional).
+# Enable by setting ENABLE_HOME=1 (here or in the environment).
+# ---------------------------------------------------------------------------
+ENABLE_HOME="0"
+
+HOME_NAME="home"
+HOME_MODEL="deepseek/deepseek-v2-flash"
+HOME_PORT="8645"
+
+# Its own vault + collection, fully separate from the primary side.
+HOME_VAULT="vault-home"
+HOME_COLLECTION="vault_home"
+
+# Its Telegram bot token comes from HOME_TELEGRAM_BOT_TOKEN in .env (a SECOND
+# @BotFather bot, distinct from the primary side's).

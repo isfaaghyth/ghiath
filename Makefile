@@ -5,7 +5,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help bootstrap up deploy down restart ps logs couch-init test secrets pull update clean hermes-info
+.PHONY: help bootstrap up deploy down restart ps logs couch-init test secrets pull update clean reinstall hermes-info
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -53,8 +53,11 @@ update: pull ## Pull latest images and recreate (N8N_ENCRYPTION_KEY must stay st
 
 clean: ## DANGER: stop and delete all containers AND data volumes
 	@echo "This deletes caddy cert volumes and stops everything."
-	@echo "Bind-mounted data (couchdb/, qdrant/, n8n/, obsidian-vault/) is NOT touched."
+	@echo "Bind-mounted data (couchdb/, qdrant/, n8n/, vault/) is NOT touched."
 	@docker compose --profile prod down -v
+
+reinstall: ## Force reinstall: pick a reset level, rebuild stack + reprovision agents (K=keirouter-key)
+	@./scripts/force-reinstall.sh $(K)
 
 hermes-info: ## Show hermes profiles and their models (host-level)
 	@hermes profile list 2>/dev/null || echo "hermes not installed or not on PATH"

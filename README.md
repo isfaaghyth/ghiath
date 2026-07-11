@@ -43,10 +43,14 @@ Ghiath is assembled from a few cooperating, self-hostable pieces:
 
 The three agents:
 
-- `ippang` - a lightweight personal assistant. Owns `obsidian-vault/scratchpads/`.
-- `kuli` - a software engineer buddy that plans with a strong model and executes
-  with a fast one. Owns `obsidian-vault/projects/`.
-- `pakprof` - a researcher. Owns `obsidian-vault/memory/`.
+- `assistant` - a lightweight everyday assistant. Owns `vault/scratchpads/`.
+- `engineer` - a software engineer buddy that plans with a strong model and executes
+  with a fast one. Owns `vault/projects/`.
+- `researcher` - a deep researcher. Owns `vault/memory/`.
+
+Agent names, models, vault folder names, and ports are configurable: copy
+`agents.conf.example` to `agents.conf` and edit it. The shipped defaults are the
+neutral names above.
 
 There is no central lead agent; n8n plays the router. Agents hand off to each
 other by writing a note into the target agent's folder.
@@ -68,7 +72,7 @@ other by writing a note into the target agent's folder.
                                  v
             +--------------------+---------------------+
             |         hermes agents (on the host)      |
-            |     ippang        kuli        pakprof     |
+            |     assistant     engineer    researcher   |
             +----+----------------+----------------+----+
                  |   read / write owned vault folders   |
                  v                                       v
@@ -117,11 +121,11 @@ ghiath/
 - caddy/                 Caddyfile for the VPS reverse proxy
 - n8n-workflows/         importable router + vault-watch workflows (tracked)
 - qdrant-indexer/        vault watcher sidecar (Dockerfile + indexer.py)
-- obsidian-vault/        the Obsidian vault (gitignored)
+- vault/        the Obsidian vault (gitignored)
     - 000-Dashboard.md
-    - scratchpads/       ippang's folder
-    - projects/          kuli's folder
-    - memory/            pakprof's folder
+    - scratchpads/       assistant's folder
+    - projects/          engineer's folder
+    - memory/            researcher's folder
 - n8n/ keirouter/ couchdb/ qdrant/    runtime data (gitignored)
 ```
 
@@ -173,7 +177,7 @@ make couch-init
 ```
 
 Then install the Obsidian "Self-hosted LiveSync" community plugin, open
-`obsidian-vault/` as a vault, and point the plugin at CouchDB:
+`vault/` as a vault, and point the plugin at CouchDB:
 
 - URI: `http://localhost:5984` locally, or `https://couch.example.com` on the VPS
 - Username and password: `COUCHDB_USER` / `COUCHDB_PASSWORD` from `.env`
@@ -196,34 +200,40 @@ profiles (models, KeiRouter wiring, roles, Telegram, and gateways) idempotently:
 ./scripts/hermes.sh <keirouter-virtual-key>
 ```
 
+The script sources `agents.conf` for the agent names, models, vault folder
+names, Qdrant collection names, and ports. Copy `agents.conf.example` to
+`agents.conf` and edit it to customize any of these (inline env vars still
+override); the shipped defaults are the neutral names below.
+
 To do it by hand instead, the equivalent per-profile commands are:
 
 ```bash
-hermes profile create ippang
-ippang config set model.default deepseek/deepseek-v2-flash
+hermes profile create assistant
+assistant config set model.default deepseek/deepseek-v2-flash
 
-hermes profile create kuli
-kuli config set model.default anthropic/claude-opus-4-8      # orchestrator, plans
-kuli config set subagents.model anthropic/claude-sonnet-5    # subagents, execute
+hermes profile create engineer
+engineer config set model.default anthropic/claude-opus-4-8      # orchestrator, plans
+engineer config set subagents.model anthropic/claude-sonnet-5    # subagents, execute
 
-hermes profile create pakprof
-pakprof config set model.default z-ai/glm-4.6
+hermes profile create researcher
+researcher config set model.default z-ai/glm-4.6
 ```
 
 Notes:
 
-- Each profile becomes its own alias command (`ippang`, `kuli`, `pakprof`), so
-  you configure it as `ippang config set ...`. There is no `-p` global flag.
-- There is no `model.planning` key. kuli's "strong model plans, fast model
-  executes" split is done with the orchestrator (`model.default`) plus a subagent
-  model override (`subagents.model`).
+- Each profile becomes its own alias command (`assistant`, `engineer`,
+  `researcher`), so you configure it as `assistant config set ...`. There is no
+  `-p` global flag.
+- There is no `model.planning` key. The engineer's "strong model plans, fast
+  model executes" split is done with the orchestrator (`model.default`) plus a
+  subagent model override (`subagents.model`).
 - Model slugs drift. After adding keys, confirm exact slugs from the live catalog
   with `hermes model --refresh` and adjust if one does not resolve.
 
 Start a profile's gateway when you want it reachable by n8n (default port 8642):
 
 ```bash
-ippang gateway start
+assistant gateway start
 ```
 
 ### Routing through KeiRouter
@@ -257,7 +267,7 @@ To finish the connection:
    ./scripts/keirouter-connect.sh <kr_key>
    ```
 
-5. Test one: `ippang -z "say hello in three words"`.
+5. Test one: `assistant -z "say hello in three words"`.
 
 Keys live only in KeiRouter, so you rotate them in one place and get per-agent
 spend tracking and a semantic cache. Leave `ANTHROPIC_API_KEY` /
@@ -266,8 +276,8 @@ spend tracking and a semantic cache. Leave `ANTHROPIC_API_KEY` /
 ### Telegram bot
 
 hermes has native Telegram support, so an agent can be reached from a Telegram
-bot with no extra service. One bot maps to one front-door agent (ippang by
-default); it answers directly and hands off to kuli or pakprof through the vault.
+bot with no extra service. One bot maps to one front-door agent (`assistant` by
+default); it answers directly and hands off to the engineer or researcher through the vault.
 
 1. In Telegram, message [@BotFather](https://t.me/BotFather), run `/newbot`, and
    copy the token it gives you.
@@ -287,18 +297,47 @@ default); it answers directly and hands off to kuli or pakprof through the vault
    profile's gateway runs, hermes connects the bot. Message your bot to test.
 
 Lock it down after the first message: set `platforms.telegram.allowed_chats` in
-`~/.hermes/profiles/ippang/config.yaml` to your own chat id, so only you can use
-the bot. Change the front-door agent with `TELEGRAM_PROFILE=kuli ./scripts/hermes.sh`.
+`~/.hermes/profiles/assistant/config.yaml` to your own chat id, so only you can use
+the bot. Change the front-door agent by setting `PRIMARY_TELEGRAM_AGENT` in
+`agents.conf` (for example `PRIMARY_TELEGRAM_AGENT=engineer`).
+
+### A second, isolated assistant (optional)
+
+If you want a second, isolated everyday assistant without touching your
+technical vault, enable `home`: a Telegram-only helper for everyday tasks
+(reminders, lists, journaling). It is fully separate - its own vault
+(`vault-home/`), its own Qdrant collection (`vault_home`), and no
+handoffs to or from your agents.
+
+1. Create a second bot with [@BotFather](https://t.me/BotFather) and put its
+   token in `.env` as `HOME_TELEGRAM_BOT_TOKEN`.
+2. Start its indexer sidecar (own compose profile):
+
+   ```bash
+   docker compose --profile home up -d
+   ```
+
+3. Provision its profile (adds `home`, seeds `vault-home/`, connects
+   its bot):
+
+   ```bash
+   ENABLE_HOME=1 ./scripts/hermes.sh <keirouter-virtual-key>
+   ```
+
+It opens `vault-home/` as a separate Obsidian vault (and a separate
+LiveSync database name), so it never mixes with yours.
 
 ## n8n workflows
 
 Two starting workflows live in `n8n-workflows/` and are imported automatically:
 
 - **Router** (`router.json`): a `POST /webhook/ghiath` endpoint that inspects the
-  message, picks an agent (research keywords go to pakprof, build keywords to
-  kuli, everything else to ippang), calls that agent's gateway, and returns the
-  reply. The agent persists its own output into its vault folder.
-- **Vault Watch** (`vault-watch.json`): watches `obsidian-vault/` for new `.md`
+  message, picks an agent (research keywords go to the researcher, build keywords to
+  the engineer, everything else to the assistant), calls that agent's gateway, and returns the
+  reply. The agent persists its own output into its vault folder. Routing is
+  config-driven via the optional n8n environment variable `GHIATH_ROUTES` (JSON),
+  falling back to the neutral defaults (assistant/engineer/researcher).
+- **Vault Watch** (`vault-watch.json`): watches `vault/` for new `.md`
   files and triggers the agent that owns the folder the note landed in. This is
   the handoff mechanism.
 
@@ -314,9 +353,9 @@ gateways cannot share one), connect the profiles to KeiRouter, then toggle each
 workflow Active in the editor:
 
 ```bash
-ippang gateway start                 # 8642
-PORT=8643 kuli gateway start
-PORT=8644 pakprof gateway start
+assistant gateway start              # 8642
+PORT=8643 engineer gateway start
+PORT=8644 researcher gateway start
 ```
 
 These are scaffolds, not finished automations. Verify the gateway URLs/ports and

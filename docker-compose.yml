@@ -49,9 +49,13 @@ services:
 
   # ---------------------------------------------------------------------------
   # Qdrant indexer - the vault watcher sidecar (Step 4).
-  # A small Python polling script: walks obsidian-vault/, chunks changed .md
+  # A small Python polling script: walks the primary vault, chunks changed .md
   # files, embeds them locally with fastembed (no external API needed), and
   # upserts into Qdrant. Deliberately simple; see qdrant-indexer/indexer.py.
+  #
+  # The vault folder and collection are configurable. They default to the same
+  # values as agents.conf.example; if you rename them in agents.conf, mirror
+  # PRIMARY_VAULT / PRIMARY_COLLECTION in .env so compose picks them up.
   # ---------------------------------------------------------------------------
   qdrant-indexer:
     build: ./qdrant-indexer
@@ -61,11 +65,37 @@ services:
       - qdrant
     environment:
       QDRANT_URL: http://qdrant:6333
-      QDRANT_COLLECTION: vault
+      QDRANT_COLLECTION: ${PRIMARY_COLLECTION:-vault}
       VAULT_PATH: /vault
       POLL_INTERVAL_SECONDS: "30"
     volumes:
-      - ./obsidian-vault:/vault:ro
+      - ./${PRIMARY_VAULT:-vault}:/vault:ro
+
+  # ---------------------------------------------------------------------------
+  # Qdrant indexer (home) - the SAME image, pointed at the home vault.
+  # Full isolation from the primary vault: it only mounts the home vault folder
+  # and writes to a separate Qdrant collection. It physically cannot see the
+  # primary vault (never mounted here) and search cannot cross because the
+  # collections are distinct. The home agent is Telegram-only; no n8n.
+  #
+  # Opt-in via the "home" compose profile, so it never starts unless asked:
+  #   docker compose --profile home up -d
+  # (combine with --profile prod on the VPS if needed).
+  # ---------------------------------------------------------------------------
+  qdrant-indexer-home:
+    build: ./qdrant-indexer
+    container_name: ghiath-qdrant-indexer-home
+    restart: unless-stopped
+    profiles: ["home"]
+    depends_on:
+      - qdrant
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${HOME_COLLECTION:-vault_home}
+      VAULT_PATH: /vault
+      POLL_INTERVAL_SECONDS: "30"
+    volumes:
+      - ./${HOME_VAULT:-vault-home}:/vault:ro
 
   # ---------------------------------------------------------------------------
   # KeiRouter - self-hosted LLM gateway (cost / key management).
@@ -96,7 +126,7 @@ services:
   # n8n - the automation / routing nervous system.
   # Inbound messages (Telegram, Discord, web) hit n8n; it decides which hermes
   # profile to call, calls it over the local gateway, and logs the result into
-  # the vault. The vault is mounted read/write at /data/obsidian-vault.
+  # the vault. The vault is mounted read/write at /data/vault.
   # ---------------------------------------------------------------------------
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
@@ -123,7 +153,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./n8n:/home/node/.n8n
-      - ./obsidian-vault:/data/obsidian-vault
+      - ./${PRIMARY_VAULT:-vault}:/data/vault
 
   # ---------------------------------------------------------------------------
   # Caddy - reverse proxy + automatic HTTPS. PROD ONLY.
