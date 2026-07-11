@@ -23,6 +23,7 @@ opt-in step, not a requirement.
   - [CouchDB and Obsidian LiveSync](#couchdb-and-obsidian-livesync)
   - [Hermes profiles](#hermes-profiles)
   - [Routing through KeiRouter](#routing-through-keirouter)
+  - [Telegram bot](#telegram-bot)
 - [n8n workflows](#n8n-workflows)
 - [Deployment](#deployment)
 
@@ -182,11 +183,22 @@ Repeat on mobile once the VPS is reachable over HTTPS.
 
 ### Hermes profiles
 
-hermes runs on the host, not in Docker. Install it and create the profiles:
+hermes runs on the host, not in Docker. After installing it once:
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
 
+the fastest path is the setup script, which resets and reprovisions all three
+profiles (models, KeiRouter wiring, roles, Telegram, and gateways) idempotently:
+
+```bash
+./scripts/hermes.sh <keirouter-virtual-key>
+```
+
+To do it by hand instead, the equivalent per-profile commands are:
+
+```bash
 hermes profile create ippang
 ippang config set model.default deepseek/deepseek-v2-flash
 
@@ -242,6 +254,33 @@ To finish the connection:
 Keys live only in KeiRouter, so you rotate them in one place and get per-agent
 spend tracking and a semantic cache. Leave `ANTHROPIC_API_KEY` /
 `OPENROUTER_API_KEY` blank in `.env` unless you deliberately bypass KeiRouter.
+
+### Telegram bot
+
+hermes has native Telegram support, so an agent can be reached from a Telegram
+bot with no extra service. One bot maps to one front-door agent (ippang by
+default); it answers directly and hands off to kuli or pakprof through the vault.
+
+1. In Telegram, message [@BotFather](https://t.me/BotFather), run `/newbot`, and
+   copy the token it gives you.
+2. Put it in `.env`:
+
+   ```
+   TELEGRAM_BOT_TOKEN=123456:ABC-your-token
+   ```
+
+3. Run the setup script (also covers cleanup and profile config):
+
+   ```bash
+   ./scripts/hermes.sh <keirouter-virtual-key>
+   ```
+
+   It writes the token into the front-door profile's `.env` and, when that
+   profile's gateway runs, hermes connects the bot. Message your bot to test.
+
+Lock it down after the first message: set `platforms.telegram.allowed_chats` in
+`~/.hermes/profiles/ippang/config.yaml` to your own chat id, so only you can use
+the bot. Change the front-door agent with `TELEGRAM_PROFILE=kuli ./scripts/hermes.sh`.
 
 ## n8n workflows
 
