@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 #
 # Connect the hermes profiles to KeiRouter.
-# Sets the KeiRouter virtual key as each profile's model api_key, so the agents
-# authenticate to KeiRouter (which holds the real upstream provider keys).
+# Sets the KeiRouter API key (kr_...) as each profile's model api_key, so the
+# agents authenticate to KeiRouter (which holds the real upstream provider keys).
 #
 # Usage:
-#   ./scripts/keirouter-connect.sh <keirouter-virtual-key>
+#   ./scripts/keirouter-connect.sh <kr_key>
 #
-# Get the virtual key from the KeiRouter dashboard (http://localhost:20180):
-#   1. Log in (default password 'keirouter' - change it first).
-#   2. Add an upstream provider key (Anthropic and/or OpenRouter).
-#   3. Mint a virtual key and paste it here.
+# Mint the kr_ key (this is NOT the .env master key):
+#   docker compose exec keirouter keirouter bootstrap -key-name ghiath-agents
+# Also add an upstream provider key (Anthropic and/or OpenRouter) in the
+# KeiRouter dashboard so it can reach a model. Log in with the default password
+# 'keirouter' and change it first.
 #
 # The provider and base_url are already set by the project setup; this only
 # fills in the key.

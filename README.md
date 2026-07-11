@@ -242,11 +242,19 @@ To finish the connection:
 1. Open the KeiRouter dashboard, log in, and change the default password.
 2. Add your upstream provider key(s), and confirm the model slugs KeiRouter
    exposes match each profile's `model.default`.
-3. Mint a virtual key.
+3. Mint a client API key (the `kr_...` value clients authenticate with; distinct
+   from the `.env` master key). The reliable way is the CLI:
+
+   ```bash
+   docker compose exec keirouter keirouter bootstrap -key-name ghiath-agents
+   # prints a kr_... key once - copy it
+   ```
+
+   It also appears in the dashboard's key list afterward.
 4. Push it into all three profiles:
 
    ```bash
-   ./scripts/keirouter-connect.sh <keirouter-virtual-key>
+   ./scripts/keirouter-connect.sh <kr_key>
    ```
 
 5. Test one: `ippang -z "say hello in three words"`.
