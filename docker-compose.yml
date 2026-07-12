@@ -48,15 +48,24 @@ services:
   livesync-bridge:
     build:
       context: "https://github.com/vrtmrz/livesync-bridge.git#f27f78cc09b4dcfdceb952f6a222c82d51fee31f"
-      # Upstream's Dockerfile, minus the hard failure. Their `deno cache main.ts`
-      # is only a pre-warm - `deno install` above already fetched the deps - but it
-      # aborts the whole build if the builder cannot reach jsr.io. Tolerate it, and
-      # let `deno task run` resolve anything still missing at startup.
+      # Upstream's Dockerfile with the error handling inverted.
+      #
+      # The project runs Deno in "byonm" mode, so npm packages are resolved from a
+      # real node_modules/ that `deno install` populates. Upstream writes that step
+      # as `deno install || true`, which hides a failed install; the build then dies
+      # one line later at `deno cache` with the misleading
+      #   could not find a matching package for "npm:octagonal-wheels"
+      # when the true cause is that the builder could not reach the npm registry.
+      #
+      # So: let the install fail loudly (it is load-bearing), and tolerate the cache
+      # step (it is only a pre-warm).
       dockerfile_inline: |
         FROM docker.io/denoland/deno:2.6.9
         WORKDIR /app
         COPY --chown=deno:deno . .
-        RUN deno install || true
+        RUN deno install
+        RUN test -d node_modules/octagonal-wheels \
+            || (echo "ERROR: deno install produced no node_modules - the builder cannot reach the npm registry" && exit 1)
         RUN deno cache main.ts || true
         CMD ["deno", "task", "run"]
     container_name: ghiath-livesync-bridge
