@@ -148,6 +148,10 @@ services:
       N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
       N8N_RUNNERS_ENABLED: "true"
       GENERIC_TIMEZONE: Asia/Jakarta
+      # Agent -> {port, model, folder} map read by both workflows. Without it they
+      # fall back to the neutral template names and every route misses.
+      # Generate from agents.conf:  ./scripts/n8n-routes.sh >> .env
+      GHIATH_ROUTES: ${GHIATH_ROUTES:-}
     # Reach the host-only hermes gateway (default 8642) from inside n8n.
     extra_hosts:
       - "host.docker.internal:host-gateway"

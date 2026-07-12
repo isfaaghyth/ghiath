@@ -42,9 +42,15 @@ elif [ -f "$ROOT/agents.conf.example" ]; then
 fi
 PRIMARY_VAULT="${PRIMARY_VAULT:-vault}"
 HOME_VAULT="${HOME_VAULT:-vault-home}"
+ENABLE_HOME="${ENABLE_HOME:-0}"
 
 compose() { # run docker compose with the right profiles for the chosen mode
-	if [ "$MODE" = "prod" ]; then docker compose --profile prod "$@"; else docker compose "$@"; fi
+	local profiles=()
+	[ "$MODE" = "prod" ] && profiles+=(--profile prod)
+	# Without this the home-side indexer stays down while hermes.sh still creates
+	# the home agent, leaving its vault silently unindexed.
+	[ "$ENABLE_HOME" = "1" ] && profiles+=(--profile home)
+	docker compose "${profiles[@]+"${profiles[@]}"}" "$@"
 }
 
 # --- choose destructive level -----------------------------------------------
