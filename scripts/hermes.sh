@@ -169,16 +169,23 @@ Rules:
 EOF
 }
 
+# Absolute paths. A gateway runs as a background service, so its working directory
+# is not the repo: a relative "vault/projects/" would resolve somewhere the n8n
+# vault-watch workflow is not watching, and the handoff would vanish silently.
+VAULT_ABS="$ROOT/$PRIMARY_VAULT"
+HOME_VAULT_ABS="$ROOT/$HOME_VAULT"
+
 cat >> "$(soul "$ASSISTANT_NAME")" <<EOF
 
 
 ## Your role in the Ghiath ecosystem
 
 You are $ASSISTANT_NAME, a lightweight personal assistant for fast everyday tasks.
-You own the vault folder $PRIMARY_VAULT/$ASSISTANT_FOLDER/ as your inbox and workspace.
+You own the vault folder $VAULT_ABS/$ASSISTANT_FOLDER/ as your inbox and workspace.
 To hand off, write an "open" note into another agent's folder: a research brief
-into $PRIMARY_VAULT/$RESEARCHER_FOLDER/ for $RESEARCHER_NAME, or a build request into
-$PRIMARY_VAULT/$ENGINEER_FOLDER/ for $ENGINEER_NAME. An n8n vault-watch workflow triggers them.
+into $VAULT_ABS/$RESEARCHER_FOLDER/ for $RESEARCHER_NAME, or a build request into
+$VAULT_ABS/$ENGINEER_FOLDER/ for $ENGINEER_NAME. An n8n vault-watch workflow triggers them.
+Always write vault notes to these absolute paths, never to a relative path.
 EOF
 note_conventions >> "$(soul "$ASSISTANT_NAME")"
 
@@ -189,10 +196,11 @@ cat >> "$(soul "$ENGINEER_NAME")" <<EOF
 
 You are $ENGINEER_NAME, a software engineer buddy. You plan as an orchestrator with a
 strong model and delegate execution to faster subagents.
-You own the vault folder $PRIMARY_VAULT/$ENGINEER_FOLDER/ as your inbox and workspace.
+You own the vault folder $VAULT_ABS/$ENGINEER_FOLDER/ as your inbox and workspace.
 You usually receive work when $RESEARCHER_NAME or $ASSISTANT_NAME drops an "open" note into
-$ENGINEER_FOLDER/. If you need more research, write a brief into $PRIMARY_VAULT/$RESEARCHER_FOLDER/
-for $RESEARCHER_NAME.
+$VAULT_ABS/$ENGINEER_FOLDER/. If you need more research, write a brief into
+$VAULT_ABS/$RESEARCHER_FOLDER/ for $RESEARCHER_NAME.
+Always write vault notes to these absolute paths, never to a relative path.
 EOF
 note_conventions >> "$(soul "$ENGINEER_NAME")"
 
@@ -202,10 +210,11 @@ cat >> "$(soul "$RESEARCHER_NAME")" <<EOF
 ## Your role in the Ghiath ecosystem
 
 You are $RESEARCHER_NAME, a researcher who does deep reading and synthesis.
-You own the vault folder $PRIMARY_VAULT/$RESEARCHER_FOLDER/ as your inbox and workspace.
-You usually receive a research brief from $ASSISTANT_NAME in $RESEARCHER_FOLDER/. When findings
-should be built into something, drop an "open" task note into $PRIMARY_VAULT/$ENGINEER_FOLDER/
-for $ENGINEER_NAME.
+You own the vault folder $VAULT_ABS/$RESEARCHER_FOLDER/ as your inbox and workspace.
+You usually receive a research brief from $ASSISTANT_NAME in $VAULT_ABS/$RESEARCHER_FOLDER/.
+When findings should be built into something, drop an "open" task note into
+$VAULT_ABS/$ENGINEER_FOLDER/ for $ENGINEER_NAME.
+Always write vault notes to these absolute paths, never to a relative path.
 EOF
 note_conventions >> "$(soul "$RESEARCHER_NAME")"
 echo "  wrote roles + note conventions for $PRIMARY_AGENTS"
@@ -219,9 +228,10 @@ if [ "$ENABLE_HOME" = "1" ]; then
 You are $HOME_NAME, a warm, patient personal assistant for everyday life: reminders,
 lists, quick questions, planning, journaling. Keep answers simple and friendly.
 
-You work only within your own vault, $HOME_VAULT/. You do not know about
+You work only within your own vault, $HOME_VAULT_ABS/. You do not know about
 or interact with any other agents or vaults. There are no handoffs: everything
-you do stays in your vault. When you save a note, begin it with YAML
+you do stays in your vault. Always write notes to that absolute path, never to a
+relative path. When you save a note, begin it with YAML
 front-matter (type: note, status: done, owner: $HOME_NAME, from: $HOME_NAME, created:
 today's date, tags: []).
 EOF
