@@ -150,8 +150,13 @@ services:
       GENERIC_TIMEZONE: Asia/Jakarta
       # Agent -> {port, model, folder} map read by both workflows. Without it they
       # fall back to the neutral template names and every route misses.
-      # Generate from agents.conf:  ./scripts/n8n-routes.sh >> .env
+      # Generate from agents.conf:  ./scripts/sync-env.sh --write
       GHIATH_ROUTES: ${GHIATH_ROUTES:-}
+      # Used by the vault-notify workflow to push a delegated agent's finished
+      # result back into the chat. Same bot as the assistant: sending is a
+      # separate API call from receiving, so it does not fight the hermes bot.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     # Reach the host-only hermes gateway (default 8642) from inside n8n.
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -1,0 +1,70 @@
+{
+  "id": "ghiath-vault-notify",
+  "name": "Ghiath Vault Notify",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerOn": "folder",
+        "path": "/data/vault",
+        "events": ["add"],
+        "options": {
+          "usePolling": true,
+          "ignored": "**/.obsidian/**"
+        }
+      },
+      "id": "watch-results",
+      "name": "Watch Vault Results",
+      "type": "n8n-nodes-base.localFileTrigger",
+      "typeVersion": 1,
+      "position": [-200, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// A note landed in the vault. If it is a FINISHED result from a delegated agent\n// (kuli/pakprof), push it back into the Telegram chat so the handoff is not a\n// dead end. The assistant's own output is skipped: you already saw that reply in\n// the chat when it answered you directly.\n//\n// This never triggers an agent, so it cannot loop with the vault-watch workflow:\n// that one only acts on status \"open\", this one only on status \"done\".\n//\n// Needs two env vars on the n8n service:\n//   TELEGRAM_BOT_TOKEN - the same bot as the assistant. Sending is a separate API\n//                        call from receiving, so it does NOT conflict with the\n//                        hermes native bot polling for updates on that token.\n//   TELEGRAM_CHAT_ID   - where to deliver. The agents never learn your chat id,\n//                        so it is configured, not inferred.\nconst fs = require('fs');\n\nconst token = $env.TELEGRAM_BOT_TOKEN;\nconst chatId = $env.TELEGRAM_CHAT_ID;\nif (!token || !chatId) return [];\n\nconst path = ($input.first().json.path || '').toString();\nif (!path.endsWith('.md')) return [];\n\n// Identify the assistant (the route flagged default) so we can skip its own notes.\nlet routes = {};\ntry { if ($env.GHIATH_ROUTES) routes = JSON.parse($env.GHIATH_ROUTES); } catch (e) {}\nconst assistant = Object.keys(routes).find(a => routes[a].default);\n\nlet raw;\ntry {\n  raw = fs.readFileSync(path, 'utf8');\n} catch (e) {\n  // Unreadable (e.g. caught mid-write); skip rather than send a truncated note.\n  return [];\n}\n\nconst fm = raw.match(/^---\\n([\\s\\S]*?)\\n---/);\nif (!fm) return [];\nconst field = (k) => {\n  const m = fm[1].match(new RegExp('^' + k + ':\\\\s*(.+)$', 'm'));\n  return m ? m[1].trim().toLowerCase() : '';\n};\n\n// Only completed results, and only from an agent other than the assistant.\nif (field('status') !== 'done') return [];\nif (field('type') !== 'result') return [];\nconst owner = field('owner');\nif (!owner || owner === assistant) return [];\n\n// Body without the front-matter. Telegram hard-caps a message at 4096 chars.\nconst body = raw.slice(fm[0].length).trim();\nconst note = path.replace('/data/vault/', '');\nconst header = `\\u2705 ${owner} finished a task\\n${note}\\n\\n`;\nconst room = 3900 - header.length;\nconst text = header + (body.length > room ? body.slice(0, room) + '\\n\\n[...truncated, full note in the vault]' : body);\n\nreturn [{ json: { url: `https://api.telegram.org/bot${token}/sendMessage`, chatId, text, note, owner } }];"
+      },
+      "id": "filter-results",
+      "name": "Filter Finished Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [20, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.chatId, text: $json.text, disable_web_page_preview: true }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "send-telegram",
+      "name": "Send To Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0]
+    }
+  ],
+  "connections": {
+    "Watch Vault Results": {
+      "main": [[{ "node": "Filter Finished Results", "type": "main", "index": 0 }]]
+    },
+    "Filter Finished Results": {
+      "main": [[{ "node": "Send To Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
