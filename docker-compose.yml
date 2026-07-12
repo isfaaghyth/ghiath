@@ -32,6 +32,35 @@ services:
       - ./couchdb:/opt/couchdb/data
 
   # ---------------------------------------------------------------------------
+  # livesync-bridge - the missing link between the vault ON DISK and CouchDB.
+  #
+  # Self-hosted LiveSync is an Obsidian plugin: it syncs Obsidian clients to
+  # CouchDB, storing notes as chunked documents, not as .md files. There is no
+  # Obsidian on this host, so without this bridge the agents' notes (plain files
+  # in the vault) and your devices (talking to CouchDB) would never meet.
+  #
+  # It replicates a filesystem peer and a couchdb peer that share a "group".
+  # Its config holds the CouchDB password, so it is generated, never committed:
+  #   ./scripts/sync-env.sh --write
+  #
+  # Pinned to a commit: upstream publishes no image and cuts no tags.
+  # ---------------------------------------------------------------------------
+  livesync-bridge:
+    build:
+      context: "https://github.com/vrtmrz/livesync-bridge.git#f27f78cc09b4dcfdceb952f6a222c82d51fee31f"
+    container_name: ghiath-livesync-bridge
+    restart: unless-stopped
+    depends_on:
+      - couchdb
+    volumes:
+      - ./livesync-bridge/config.json:/app/dat/config.json:ro
+      # Storage peers must live under data/ for the bridge to mount them. These
+      # are read/write: the whole point is that it writes your devices' notes
+      # back down to the disk the agents read.
+      - ./${PRIMARY_VAULT:-vault}:/app/data/${PRIMARY_VAULT:-vault}
+      - ./${HOME_VAULT:-vault-home}:/app/data/${HOME_VAULT:-vault-home}
+
+  # ---------------------------------------------------------------------------
   # Qdrant - vector DB / semantic search layer over the vault.
   # 6333 = REST + web dashboard (http://localhost:6333/dashboard), 6334 = gRPC.
   # ---------------------------------------------------------------------------

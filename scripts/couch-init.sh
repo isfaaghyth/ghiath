@@ -10,7 +10,9 @@ cd "$(dirname "$0")/.."
 
 # Read only the two values we need, without sourcing .env. Values like the
 # bcrypt BASIC_AUTH_HASH contain '$', which would break `source` under set -u.
-getenv() { grep -E "^$1=" .env | head -n1 | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//"; }
+# '|| true': an absent key is normal (callers supply defaults), but grep exits 1 on
+# no match and set -o pipefail would otherwise abort the script.
+getenv() { { grep -E "^$1=" .env || true; } | head -n1 | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//"; }
 COUCHDB_USER="$(getenv COUCHDB_USER)"
 COUCHDB_PASSWORD="$(getenv COUCHDB_PASSWORD)"
 
@@ -64,5 +66,19 @@ for db in _users _replicator; do
 	curl -fsS "${AUTH[@]}" -X PUT "${HOST}/${db}" >/dev/null 2>&1 || true
 done
 
+# Create the vault databases. Neither the LiveSync plugin nor livesync-bridge
+# creates these: the bridge just probes, gets a 404, and retries forever.
+LIVESYNC_DB="$(getenv LIVESYNC_DB)"; LIVESYNC_DB="${LIVESYNC_DB:-ghiath}"
+LIVESYNC_HOME_DB="$(getenv LIVESYNC_HOME_DB)"; LIVESYNC_HOME_DB="${LIVESYNC_HOME_DB:-ghiath-home}"
+for db in "$LIVESYNC_DB" "$LIVESYNC_HOME_DB"; do
+	code=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X PUT "${HOST}/${db}")
+	case "$code" in
+		201|202) echo "  created database $db" ;;
+		412)     echo "  database $db already exists" ;;
+		*)       echo "  WARNING: could not create database $db (HTTP $code)" >&2 ;;
+	esac
+done
+
 echo "[couch-init] done. Point the LiveSync plugin at ${HOST} with the"
-echo "             COUCHDB_USER / COUCHDB_PASSWORD from .env."
+echo "             COUCHDB_USER / COUCHDB_PASSWORD from .env, and database"
+echo "             name '${LIVESYNC_DB}' (home: '${LIVESYNC_HOME_DB}')."

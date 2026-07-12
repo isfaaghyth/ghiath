@@ -107,3 +107,80 @@ echo "[sync-env] .env updated (backup: .env.bak)"
 echo "[sync-env] primary vault: $PRIMARY_VAULT -> collection $PRIMARY_COLLECTION"
 echo "[sync-env] home vault:    $HOME_VAULT -> collection $HOME_COLLECTION"
 echo "[sync-env] routes:        $ASSISTANT_NAME(default) $ENGINEER_NAME $RESEARCHER_NAME"
+
+# --- livesync-bridge config -------------------------------------------------
+# Pairs each vault directory with a CouchDB database under a shared "group", so
+# the notes the agents write on disk reach your devices, and vice versa. Holds the
+# CouchDB password, so it is generated into a gitignored file rather than committed.
+#
+# The database names are what you type into the Obsidian LiveSync plugin. The
+# passphrase must match the plugin's E2EE passphrase, or the two cannot read each
+# other; leave it empty on both sides to keep E2EE off.
+# '|| true': a missing key is normal (the defaults below cover it), but grep exits
+# 1 on no match and set -o pipefail would otherwise abort the whole script.
+getenv() { { grep -E "^$1=" .env || true; } | head -n1 | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//"; }
+COUCHDB_USER="$(getenv COUCHDB_USER)"
+COUCHDB_PASSWORD="$(getenv COUCHDB_PASSWORD)"
+LIVESYNC_DB="$(getenv LIVESYNC_DB)"; LIVESYNC_DB="${LIVESYNC_DB:-ghiath}"
+LIVESYNC_HOME_DB="$(getenv LIVESYNC_HOME_DB)"; LIVESYNC_HOME_DB="${LIVESYNC_HOME_DB:-ghiath-home}"
+LIVESYNC_PASSPHRASE="$(getenv LIVESYNC_PASSPHRASE)"
+
+mkdir -p livesync-bridge
+COUCHDB_USER="$COUCHDB_USER" COUCHDB_PASSWORD="$COUCHDB_PASSWORD" \
+LIVESYNC_DB="$LIVESYNC_DB" LIVESYNC_HOME_DB="$LIVESYNC_HOME_DB" \
+LIVESYNC_PASSPHRASE="$LIVESYNC_PASSPHRASE" \
+PRIMARY_VAULT="$PRIMARY_VAULT" HOME_VAULT="$HOME_VAULT" ENABLE_HOME="${ENABLE_HOME:-0}" \
+python3 - <<'PY' > livesync-bridge/config.json
+import json, os
+
+def couch(name, group, database):
+    peer = {
+        "type": "couchdb",
+        "name": name,
+        "group": group,
+        "database": database,
+        # Inside the compose network, not via Caddy: no TLS hop, no public exposure.
+        "url": "http://couchdb:5984",
+        "username": os.environ["COUCHDB_USER"],
+        "password": os.environ["COUCHDB_PASSWORD"],
+        # Required, not optional: the peer joins it into every path, and a missing
+        # baseDir crashes the watcher with 'Path must be a string, received
+        # "undefined"'. Empty string = sync the whole vault, not a subfolder.
+        "baseDir": "",
+    }
+    if os.environ.get("LIVESYNC_PASSPHRASE"):
+        peer["passphrase"] = os.environ["LIVESYNC_PASSPHRASE"]
+    return peer
+
+def storage(name, group, vault):
+    # baseDir must sit under data/ - that is what the bridge mounts.
+    return {
+        "type": "storage",
+        "name": name,
+        "group": group,
+        "baseDir": f"./data/{vault}/",
+        # Pick up notes written while the bridge was down (e.g. by an agent).
+        "scanOfflineChanges": True,
+    }
+
+peers = [
+    couch("work-remote", "work", os.environ["LIVESYNC_DB"]),
+    storage("work-vault", "work", os.environ["PRIMARY_VAULT"]),
+]
+if os.environ.get("ENABLE_HOME") == "1":
+    peers += [
+        couch("home-remote", "home", os.environ["LIVESYNC_HOME_DB"]),
+        storage("home-vault", "home", os.environ["HOME_VAULT"]),
+    ]
+
+print(json.dumps({"peers": peers}, indent=2))
+PY
+
+echo "[sync-env] livesync-bridge/config.json written"
+echo "[sync-env]   $PRIMARY_VAULT <-> couchdb db '$LIVESYNC_DB'"
+if [ "${ENABLE_HOME:-0}" = "1" ]; then
+	echo "[sync-env]   $HOME_VAULT <-> couchdb db '$LIVESYNC_HOME_DB'"
+fi
+if [ -z "$LIVESYNC_PASSPHRASE" ]; then
+	echo "[sync-env]   E2EE off (set LIVESYNC_PASSPHRASE in .env to enable; must match Obsidian)"
+fi

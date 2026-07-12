@@ -13,3 +13,4 @@ vault-home/
 .idea/
 .vscode/
 .env.bak
+livesync-bridge/config.json

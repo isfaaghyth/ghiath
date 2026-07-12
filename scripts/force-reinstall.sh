@@ -128,8 +128,9 @@ fi
 # The vaults belong here too: if compose mounts a vault that does not exist yet,
 # the docker daemon creates it as root, and the host-side hermes.sh then cannot
 # write the agent folders into it ("mkdir: Permission denied").
-mkdir -p n8n keirouter couchdb qdrant "$PRIMARY_VAULT"
-if [ "$ENABLE_HOME" = "1" ]; then mkdir -p "$HOME_VAULT"; fi
+# Both vaults unconditionally: livesync-bridge mounts each one whether or not the
+# home side is enabled, and a mount target docker has to invent becomes root-owned.
+mkdir -p n8n keirouter couchdb qdrant "$PRIMARY_VAULT" "$HOME_VAULT"
 
 echo
 echo "== rebuilding stack =="
