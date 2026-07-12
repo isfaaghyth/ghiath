@@ -25,6 +25,25 @@ put() {
 
 echo "[couch-init] configuring ${HOST}"
 
+# Wait until CouchDB is actually serving, not merely accepting TCP. Docker binds
+# the port the moment the container starts, so a plain connect succeeds long
+# before CouchDB answers - and on a fresh (wiped) data dir it has to build its
+# system databases first. Without this, the first PUT below races startup and
+# dies with "Recv failure: Connection reset by peer".
+wait_up() {
+	local tries=60 code
+	while [ "$tries" -gt 0 ]; do
+		code=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${HOST}/_up" 2>/dev/null || echo 000)
+		[ "$code" = "200" ] && { echo "  couchdb is up"; return 0; }
+		tries=$((tries - 1))
+		sleep 2
+	done
+	echo "  TIMEOUT: couchdb never became ready at ${HOST}" >&2
+	echo "  check:  docker logs ghiath-couchdb --tail 50" >&2
+	return 1
+}
+wait_up
+
 # Turn the single node into a usable single-node cluster (ignore if already done).
 curl -fsS "${AUTH[@]}" -X POST "${HOST}/_cluster_setup" \
 	-H "Content-Type: application/json" \

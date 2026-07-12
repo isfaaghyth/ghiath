@@ -145,7 +145,8 @@ wait_http() {
 	done
 }
 wait_http "qdrant"    "http://localhost:6333/healthz"
-wait_http "couchdb"   "http://localhost:5984/"
+# /_up (not /) - CouchDB answers / while still initializing a fresh data dir.
+wait_http "couchdb"   "http://localhost:5984/_up"
 wait_http "keirouter" "http://localhost:20180/"
 wait_http "n8n"       "http://localhost:5678/"
 
