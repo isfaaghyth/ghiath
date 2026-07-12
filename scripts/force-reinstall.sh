@@ -125,7 +125,11 @@ fi
 
 # --- rebuild ----------------------------------------------------------------
 # Recreate bind-mount dirs so they are owned by the invoking user, not root.
-mkdir -p n8n keirouter couchdb qdrant
+# The vaults belong here too: if compose mounts a vault that does not exist yet,
+# the docker daemon creates it as root, and the host-side hermes.sh then cannot
+# write the agent folders into it ("mkdir: Permission denied").
+mkdir -p n8n keirouter couchdb qdrant "$PRIMARY_VAULT"
+if [ "$ENABLE_HOME" = "1" ]; then mkdir -p "$HOME_VAULT"; fi
 
 echo
 echo "== rebuilding stack =="
