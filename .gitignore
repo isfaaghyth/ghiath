@@ -12,3 +12,4 @@ vault-home/
 .DS_Store
 .idea/
 .vscode/
+.env.bak
