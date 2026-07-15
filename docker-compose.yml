@@ -57,16 +57,27 @@ services:
       #   could not find a matching package for "npm:octagonal-wheels"
       # when the true cause is that the builder could not reach the npm registry.
       #
-      # So: let the install fail loudly (it is load-bearing), and tolerate the cache
-      # step (it is only a pre-warm).
+      # Both steps are load-bearing, and they pull from different places:
+      # `deno install` fetches the npm packages into node_modules/, while
+      # `deno cache` fetches the JSR ones (@std/*) into DENO_DIR. Letting the
+      # cache step fail produces an image with no JSR deps, which then tries to
+      # reach jsr.io on every start and crash-loops when it cannot. Fail here,
+      # in the build, where the error is visible.
+      #
+      # DENO_DIR is pinned so the cache the build writes is the one the CMD reads.
+      #
+      # jsr.io is behind Cloudflare, which blocks the VPS's datacenter IP range
+      # (npm is fine, so the build gets far enough to be misleading). Build this
+      # image on a machine that can reach JSR and ship it over; see DEPLOY.md.
       dockerfile_inline: |
         FROM docker.io/denoland/deno:2.6.9
+        ENV DENO_DIR=/deno-dir
         WORKDIR /app
         COPY --chown=deno:deno . .
         RUN deno install
         RUN test -d node_modules/octagonal-wheels \
             || (echo "ERROR: deno install produced no node_modules - the builder cannot reach the npm registry" && exit 1)
-        RUN deno cache main.ts || true
+        RUN deno cache main.ts
         CMD ["deno", "task", "run"]
     container_name: ghiath-livesync-bridge
     restart: unless-stopped
@@ -79,6 +90,33 @@ services:
       # back down to the disk the agents read.
       - ./${PRIMARY_VAULT:-vault}:/app/data/${PRIMARY_VAULT:-vault}
       - ./${HOME_VAULT:-vault-home}:/app/data/${HOME_VAULT:-vault-home}
+
+  # ---------------------------------------------------------------------------
+  # ntfy - self-hosted push server for urgent reminder alarms on the phone.
+  #
+  # The reminder-scheduler n8n workflow publishes here (internally at
+  # http://ntfy:80) when a vault reminder note comes due; the ntfy Android app,
+  # subscribed to the topic over https://ntfy.ghiath.id, rings until you tap
+  # Acknowledge. Config + auth model live in ./ntfy/server.yml. In prod Caddy
+  # proxies couch.ghiath.id-style at ntfy.ghiath.id (see caddy/Caddyfile).
+  # ---------------------------------------------------------------------------
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    container_name: ghiath-ntfy
+    command: ["serve"]
+    restart: unless-stopped
+    environment:
+      TZ: ${GENERIC_TIMEZONE:-Asia/Jakarta}
+      # Public URL of this ntfy instance. Domain-specific, so it lives in .env
+      # rather than server.yml. ntfy reads NTFY_BASE_URL natively. Locally it
+      # defaults to the loopback port this container publishes.
+      NTFY_BASE_URL: ${NTFY_BASE_URL:-http://localhost:8080}
+    ports:
+      # Loopback-only for local testing; public access is via Caddy in prod.
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+      - ./ntfy/data:/var/lib/ntfy
 
   # ---------------------------------------------------------------------------
   # Qdrant - vector DB / semantic search layer over the vault.
@@ -206,6 +244,12 @@ services:
       # separate API call from receiving, so it does not fight the hermes bot.
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      # ntfy - the reminder-scheduler workflow publishes urgent alarms here.
+      # NTFY_URL is the in-cluster address; the token is created after first
+      # start (see REMINDERS.md) and authorizes publishing.
+      NTFY_URL: ${NTFY_URL:-http://ntfy:80}
+      NTFY_TOPIC: ${NTFY_TOPIC:-ghiath-alarm}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
     # Reach the host-only hermes gateway (default 8642) from inside n8n.
     extra_hosts:
       - "host.docker.internal:host-gateway"

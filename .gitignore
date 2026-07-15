@@ -14,3 +14,4 @@ vault-home/
 .vscode/
 .env.bak
 livesync-bridge/config.json
+ntfy/data/

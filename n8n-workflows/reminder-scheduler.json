@@ -1,0 +1,54 @@
+{
+  "name": "Ghiath Reminder Scheduler",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "sched-trigger",
+      "name": "Every Minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ghiath reminder scheduler. Runs every minute. Scans /data/vault/reminders for\n// reminder notes, fires an ntfy alarm when one comes due, keeps re-nagging until\n// the user acknowledges (or the ack window elapses), and sends one Telegram ping\n// on the first fire. The agent's \"reminders\" skill only writes the notes; this\n// workflow is the engine that delivers them.\n//\n// Reminder note front-matter (see skills/reminders/SKILL.md):\n//   type: reminder | status: scheduled->firing->acknowledged|missed\n//   channel: ntfy | when: ISO8601 w/ offset | title | message\n//   priority: 1-5 | ackWindowMin: N | id: rmd-...\nconst fs = require('fs');\nconst path = require('path');\n\nconst DIR = '/data/vault/reminders';\nconst now = Date.now();\n\nconst NTFY_URL = ($env.NTFY_URL || 'http://ntfy:80').replace(/\\/+$/, '');\nconst NTFY_TOPIC = $env.NTFY_TOPIC || 'ghiath-alarm';\nconst NTFY_TOKEN = $env.NTFY_TOKEN || '';\nconst TG_TOKEN = $env.TELEGRAM_BOT_TOKEN || '';\nconst TG_CHAT = $env.TELEGRAM_CHAT_ID || '';\nconst WEBHOOK = ($env.WEBHOOK_URL || $env.N8N_WEBHOOK_URL || '').replace(/\\/+$/, '');\n\nlet files = [];\ntry {\n  files = fs.readdirSync(DIR).filter((f) => f.endsWith('.md'));\n} catch (e) {\n  return [{ json: { note: 'no reminders folder yet', dir: DIR } }];\n}\n\nconst parseFm = (raw) => {\n  const m = raw.match(/^---\\n([\\s\\S]*?)\\n---/);\n  if (!m) return null;\n  const fm = {};\n  for (const line of m[1].split('\\n')) {\n    const mm = line.match(/^([A-Za-z0-9_]+):\\s*(.*)$/);\n    if (mm) fm[mm[1]] = mm[2].trim();\n  }\n  return { fm, block: m[1], full: m[0], body: raw.slice(m[0].length).replace(/^\\n+/, '') };\n};\n\nconst setField = (block, key, val) => {\n  const re = new RegExp('^' + key + ':.*$', 'm');\n  if (re.test(block)) return block.replace(re, key + ': ' + val);\n  return block + '\\n' + key + ': ' + val;\n};\n\nconst out = [];\n\nfor (const file of files) {\n  const fp = path.join(DIR, file);\n  let raw;\n  try { raw = fs.readFileSync(fp, 'utf8'); } catch (e) { continue; }\n  const parsed = parseFm(raw);\n  if (!parsed) continue;\n  const fm = parsed.fm;\n  if ((fm.type || '') !== 'reminder') continue;\n\n  // Calendar reminders fire natively through Google; nothing to do here.\n  if ((fm.channel || 'ntfy').toLowerCase() === 'calendar') continue;\n\n  const status = (fm.status || 'scheduled').toLowerCase();\n  const whenMs = Date.parse(fm.when || '');\n  if (isNaN(whenMs)) continue;\n\n  const ackWindowMin = parseInt(fm.ackWindowMin || '15', 10);\n  const priority = Math.max(1, Math.min(5, parseInt(fm.priority || '5', 10)));\n  const title = fm.title || 'Reminder';\n  const message = fm.message || parsed.body.split('\\n')[0] || title;\n  const id = fm.id || file.replace(/\\.md$/, '');\n\n  let doSend = false, firstFire = false, newStatus = null, firedAt = fm.firedAt || '';\n\n  if (status === 'scheduled' && now >= whenMs) {\n    doSend = true; firstFire = true; newStatus = 'firing';\n    firedAt = new Date(now).toISOString();\n  } else if (status === 'firing') {\n    const firedMs = Date.parse(firedAt) || now;\n    if (now <= firedMs + ackWindowMin * 60000) {\n      doSend = true; // keep nagging\n    } else {\n      newStatus = 'missed';\n    }\n  } else {\n    continue; // scheduled-but-future, acknowledged, missed, etc.\n  }\n\n  if (doSend && NTFY_URL) {\n    const actions = WEBHOOK\n      ? [{\n          action: 'http',\n          label: 'Acknowledge',\n          url: WEBHOOK + '/webhook/reminder-ack?id=' + encodeURIComponent(id),\n          method: 'POST',\n          clear: true,\n        }]\n      : [];\n    const headers = { 'Content-Type': 'application/json' };\n    if (NTFY_TOKEN) headers.Authorization = 'Bearer ' + NTFY_TOKEN;\n    try {\n      await this.helpers.httpRequest({\n        method: 'POST',\n        url: NTFY_URL,\n        headers,\n        body: { topic: NTFY_TOPIC, title, message, priority, tags: ['alarm_clock'], actions },\n        json: true,\n      });\n    } catch (e) { /* transient; retry next minute */ }\n  }\n\n  if (doSend && firstFire && TG_TOKEN && TG_CHAT) {\n    try {\n      await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage',\n        body: { chat_id: TG_CHAT, text: '⏰ ' + title + '\\n' + message, disable_web_page_preview: true },\n        json: true,\n      });\n    } catch (e) { /* ignore */ }\n  }\n\n  if (newStatus || firstFire) {\n    let block = parsed.block;\n    if (newStatus) block = setField(block, 'status', newStatus);\n    if (firstFire) block = setField(block, 'firedAt', firedAt);\n    const rebuilt = raw.replace(/^---\\n[\\s\\S]*?\\n---/, '---\\n' + block + '\\n---');\n    try { fs.writeFileSync(fp, rebuilt); } catch (e) { /* ignore */ }\n  }\n\n  out.push({ json: { id, title, sent: doSend, firstFire, status: newStatus || status } });\n}\n\nreturn out.length ? out : [{ json: { checked: files.length, fired: 0 } }];\n"
+      },
+      "id": "fire-due",
+      "name": "Fire Due Reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every Minute": {
+      "main": [
+        [
+          {
+            "node": "Fire Due Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

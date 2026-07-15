@@ -65,3 +65,10 @@ router.ghiath.id {
 couch.ghiath.id {
 	reverse_proxy couchdb:5984
 }
+
+# ntfy - urgent push for reminder alarms. No basic_auth: ntfy runs deny-all with
+# its own users and publish tokens, and a second layer would break both the
+# phone's subscription and n8n's token-authenticated publish.
+ntfy.ghiath.id {
+	reverse_proxy ntfy:80
+}

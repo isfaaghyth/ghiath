@@ -25,6 +25,7 @@ opt-in step, not a requirement.
   - [Routing through KeiRouter](#routing-through-keirouter)
   - [Telegram bot](#telegram-bot)
 - [n8n workflows](#n8n-workflows)
+- [Reminders (alarms + calendar)](#reminders-alarms--calendar)
 - [Deployment](#deployment)
 
 ## Overview
@@ -119,7 +120,9 @@ ghiath/
 - AGENT.md               working rules for any AI agent in this repo
 - scripts/               bootstrap, couch-init, smoke-test, keirouter-connect
 - caddy/                 Caddyfile for the VPS reverse proxy
-- n8n-workflows/         importable router + vault-watch workflows (tracked)
+- n8n-workflows/         importable router, vault-watch, reminder workflows (tracked)
+- skills/                custom hermes skills seeded into agents (e.g. reminders)
+- ntfy/                  ntfy push server config (server.yml; data gitignored)
 - qdrant-indexer/        vault watcher sidecar (Dockerfile + indexer.py)
 - vault/        the Obsidian vault (gitignored)
     - 000-Dashboard.md
@@ -340,6 +343,12 @@ Two starting workflows live in `n8n-workflows/` and are imported automatically:
 - **Vault Watch** (`vault-watch.json`): watches `vault/` for new `.md`
   files and triggers the agent that owns the folder the note landed in. This is
   the handoff mechanism.
+- **Reminder Scheduler** (`reminder-scheduler.json`): polls `vault/reminders/`
+  every minute, fires an ntfy phone alarm when a reminder comes due, re-nags
+  until acknowledged, and sends one Telegram ping on first fire. See
+  [Reminders](#reminders-alarms--calendar).
+- **Reminder Ack** (`reminder-ack.json`): the webhook the alarm's Acknowledge
+  button calls; it stops the nagging. Activate it alongside the scheduler.
 
 To re-import after editing:
 
@@ -361,6 +370,48 @@ PORT=8644 researcher gateway start
 These are scaffolds, not finished automations. Verify the gateway URLs/ports and
 the routing rules against your setup, then extend them (Telegram/Discord
 triggers, richer routing, logging).
+
+## Reminders (alarms + calendar)
+
+Ask an agent over Telegram to remind you of something. The `reminders` skill
+(in `skills/`, seeded into each primary agent by `scripts/hermes.sh`) picks a
+channel:
+
+- **Alarm (ntfy)** — an urgent push to your Android phone that breaks through Do
+  Not Disturb, repeats every minute, and keeps nagging until you tap
+  **Acknowledge**. For things you must not miss.
+- **Calendar (Google Calendar)** — a normal event with a reminder, created via
+  the built-in `google-workspace` skill (which owns Google auth). For
+  appointments and soft nudges.
+
+If your request doesn't name a channel, the agent asks which you want.
+
+```
+you (Telegram) → assistant runs the "reminders" skill
+   ├─ alarm    → writes vault/reminders/<id>.md (status: scheduled)
+   │              → n8n Reminder Scheduler fires ntfy when due, re-nags until
+   │                acknowledged, one Telegram ping on first fire
+   └─ calendar → google-workspace skill creates the event (Google fires it)
+```
+
+The alarm path is self-hosted: the `ntfy` service (config in `ntfy/server.yml`)
+plus the two reminder workflows. ntfy runs **deny-all** — nobody can publish or
+read without credentials — so after first start you create a user (for the
+phone) and a publish token (for n8n):
+
+```bash
+docker compose exec ntfy ntfy user add --role=admin ghiath   # sets a password
+docker compose exec ntfy ntfy token add ghiath               # prints tk_...
+```
+
+Put the `tk_...` value in `.env` as `NTFY_TOKEN`, set `NTFY_BASE_URL` to your
+public ntfy subdomain, then recreate n8n. Install the **ntfy** Android app,
+point it at `NTFY_BASE_URL`, log in as `ghiath`, subscribe to `NTFY_TOPIC`
+(`ghiath-alarm` by default), and enable **Override Do Not Disturb** on that
+subscription — that is what makes it an alarm rather than a passive push.
+
+Full step-by-step (DNS, app config, importing/activating the workflows,
+optional calendar OAuth) is in **`REMINDERS.md`**.
 
 ## Deployment
 

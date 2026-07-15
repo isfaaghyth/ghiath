@@ -219,6 +219,23 @@ EOF
 note_conventions >> "$(soul "$RESEARCHER_NAME")"
 echo "  wrote roles + note conventions for $PRIMARY_AGENTS"
 
+# --- 3b. seed repo skills into each primary profile -------------------------
+# hermes recreates profiles from scratch on every run, which wipes any skill
+# placed by hand. Skills that ship with Ghiath live in ./skills and are copied
+# in here so they persist. Primary agents only: the reminder-scheduler workflow
+# watches the primary vault (/data/vault), so a reminder written by the isolated
+# home agent into its own vault would never fire.
+if [ -d "$ROOT/skills" ]; then
+	echo
+	echo "== seed repo skills =="
+	for a in $PRIMARY_AGENTS; do
+		dest="$HOME/.hermes/profiles/$a/skills/custom"
+		mkdir -p "$dest"
+		cp -R "$ROOT/skills/." "$dest/"
+		echo "  seeded $(cd "$ROOT/skills" && ls -d */ | tr -d /) -> $a"
+	done
+fi
+
 if [ "$ENABLE_HOME" = "1" ]; then
 	cat >> "$(soul "$HOME_NAME")" <<EOF
 

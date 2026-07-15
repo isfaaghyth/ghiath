@@ -1,0 +1,26 @@
+# ntfy - self-hosted push server for Ghiath's urgent reminder alarms.
+#
+# Reached publicly at https://ntfy.ghiath.id (Caddy terminates TLS and proxies
+# to this container on the compose network). n8n publishes to it internally at
+# http://ntfy:80; your Android phone subscribes over the public URL.
+#
+# Auth is deny-all by default: a public ntfy with open topics would let anyone
+# who guesses the topic read your reminders or blast alarms at your phone. After
+# first start, create a user and a publish token (see REMINDERS.md):
+#   docker compose exec ntfy ntfy user add --role=admin ghiath
+#   docker compose exec ntfy ntfy token add ghiath      # -> put in .env NTFY_TOKEN
+#
+# base-url is intentionally NOT set here — it is domain-specific, so it comes
+# from the environment (NTFY_BASE_URL in .env, wired through docker-compose.yml).
+# ntfy maps every env var NTFY_<KEY> onto the matching server.yml key.
+
+# Persisted under ./ntfy/data (mounted at /var/lib/ntfy).
+auth-file: "/var/lib/ntfy/user.db"
+cache-file: "/var/lib/ntfy/cache.db"
+attachment-cache-dir: "/var/lib/ntfy/attachments"
+
+# Nobody may read or publish without credentials.
+auth-default-access: "deny-all"
+
+# Caddy sits in front, so trust its X-Forwarded-For for rate limiting.
+behind-proxy: true
