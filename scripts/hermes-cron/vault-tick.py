@@ -4,7 +4,9 @@
 Two jobs, both replacing n8n workflows:
 
 1. Handoffs (was vault-watch): scan each agent's folder for a new "open" note and
-   POST it to that agent's gateway on the host, so the owning agent picks it up.
+   spawn that agent one-shot (`hermes -p <agent> -z ...`) to work it. hermes
+   agents have NO HTTP endpoint — the gateway is only a Telegram/Discord poller —
+   so a CLI one-shot, run detached, is how you invoke an agent from a script.
 2. Result notify (was vault-notify): when a delegated agent writes a finished
    "result" note, print a summary to stdout — which `hermes cron --deliver
    telegram` sends to the chat. The assistant's own results are skipped (you
@@ -25,13 +27,24 @@ PRIMARY_VAULT. Agent gateways are reached on the host loopback.
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import sys
-import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 GHIATH_ROOT = Path(os.environ.get("GHIATH_ROOT", str(Path.home() / "ghiath")))
 STATE_FILE = Path.home() / ".hermes" / "ghiath-vault-state.json"
-GATEWAY_HOST = os.environ.get("GHIATH_GATEWAY_HOST", "http://127.0.0.1")
+SPAWN_LOG = Path.home() / ".hermes" / "ghiath-handoff.log"
+
+# The hermes binary. A profile is invoked one-shot with `hermes -p <name> -z
+# <prompt>` (the ~/.local/bin/<name> shims are just `exec hermes -p <name>`).
+# HERMES_BIN overrides it, mainly for testing.
+HERMES = (
+    os.environ.get("HERMES_BIN")
+    or shutil.which("hermes")
+    or str(Path.home() / ".local" / "bin" / "hermes")
+)
 
 DEFAULT_ROUTES = {
     "assistant":  {"port": 8642, "model": "deepseek/deepseek-v2-flash", "folder": "scratchpads", "default": True},
@@ -72,19 +85,27 @@ def fm_block(raw: str):
     return raw[4:end] if end != -1 else None
 
 
-def call_gateway(port: int, model: str, prompt: str) -> None:
-    url = f"{GATEWAY_HOST}:{port}/v1/chat/completions"
-    body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}]}).encode()
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    # Fire-and-forget: a long agent run must not block the tick. A short timeout
-    # is enough to hand the request off; the agent keeps working after.
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            resp.read()
-    except Exception as e:  # noqa: BLE001
-        log(f"gateway {port} call failed: {e}")
-        raise
+def spawn_agent(agent: str, prompt: str) -> None:
+    """Launch `hermes -p <agent> -z <prompt>` detached and return immediately.
+
+    hermes agents have no HTTP endpoint; the way to invoke one from a script is
+    a one-shot CLI run, which executes the full agent loop (with tools) and
+    exits. An extensive task can take minutes, so we must NOT wait on it — the
+    tick has to finish within its minute. The agent works in the background and
+    writes its result note when done; output is appended to SPAWN_LOG for
+    debugging. start_new_session detaches it from this process group so it keeps
+    running after the tick exits.
+    """
+    SPAWN_LOG.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).isoformat()
+    with open(SPAWN_LOG, "a") as logf:
+        logf.write(f"\n===== {stamp} spawn {agent} =====\n{prompt}\n----- output -----\n")
+        logf.flush()
+        subprocess.Popen(
+            [HERMES, "-p", agent, "-z", prompt],
+            stdout=logf, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
 
 
 def main() -> int:
@@ -115,7 +136,6 @@ def main() -> int:
         fdir = vault_dir / folder
         if not fdir.is_dir():
             continue
-        cfg = routes[agent]
         for fp in sorted(fdir.glob("*.md")):
             key = f"{folder}/{fp.name}"
             seen.add(key)
@@ -127,20 +147,22 @@ def main() -> int:
             status = field(block, "status") if block else "open"
             digest = hashlib.sha256(raw.encode()).hexdigest()
 
-            # 1. Handoff: a new "open" note -> trigger the owning agent.
+            # 1. Handoff: a new "open" note -> spawn the owning agent one-shot.
             if status == "open" and fired.get(key) != digest:
+                abs_path = str(fp)
                 prompt = (
-                    f"An open note was placed in your folder: {key}\n"
-                    'Read it, set its status to "doing", act on it, then set its status '
+                    f"An open task note is waiting for you at: {abs_path}\n"
+                    'Read it, set its status to "doing", do the work, then set its status '
                     'to "done". Record your result as a note with type "result", status '
-                    '"done", owner yourself. If the task should move to another agent, '
-                    "drop an \"open\" note in that agent's folder with owner set to them."
+                    '"done", owner yourself, in the same folder. If the task should move to '
+                    "another agent, drop an \"open\" note in that agent's folder with owner "
+                    "set to them."
                 )
                 try:
-                    call_gateway(int(cfg["port"]), cfg["model"], prompt)
+                    spawn_agent(agent, prompt)
                     fired[key] = digest
-                except Exception:  # noqa: BLE001 - leave unfired so next tick retries
-                    pass
+                except Exception as e:  # noqa: BLE001 - leave unfired so next tick retries
+                    log(f"spawn {agent} for {key} failed: {e}")
 
             # 2. Notify: a finished result from a non-assistant agent -> Telegram.
             if block and status == "done" and field(block, "type") == "result":
