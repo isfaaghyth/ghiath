@@ -5,7 +5,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help bootstrap up deploy down restart ps logs couch-init test secrets pull update clean reinstall hermes-info
+.PHONY: help bootstrap up deploy down restart ps logs couch-init test secrets pull update clean reinstall hermes-info seed-cron
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -61,3 +61,6 @@ reinstall: ## Force reinstall: pick a reset level, rebuild stack + reprovision a
 
 hermes-info: ## Show hermes profiles and their models (host-level)
 	@hermes profile list 2>/dev/null || echo "hermes not installed or not on PATH"
+
+seed-cron: ## Copy hermes cron tick scripts to ~/.hermes/scripts/ (safe; not hermes.sh)
+	@./scripts/seed-cron.sh

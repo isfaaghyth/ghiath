@@ -74,11 +74,10 @@ Put the token in `.env` (the tick script reads it from there):
 ### 5. Register the hermes cron jobs
 Seed the tick scripts and register the jobs (both run every minute, no LLM):
 ```bash
-# Copy the tick scripts — do NOT run hermes.sh for this. hermes.sh DELETES and
-# recreates every agent profile (wiping gateways, Telegram bindings, and the
-# nyai family-group bot); it is only for a full re-provision, and then only with
-# ENABLE_HOME=1 and your KeiRouter key.
-cp ~/ghiath/scripts/hermes-cron/*.py ~/.hermes/scripts/
+# Copy the tick scripts (safe, non-destructive). Do NOT run hermes.sh for this:
+# it DELETES and recreates every agent profile, wiping gateways and the nyai
+# family-group bot. `make seed-cron` only copies files.
+cd ~/ghiath && make seed-cron        # == ./scripts/seed-cron.sh
 
 hermes cron create '1m' --no-agent --script reminder-tick.py \
     --deliver telegram --name ghiath-reminders
