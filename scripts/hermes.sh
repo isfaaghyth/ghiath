@@ -240,6 +240,18 @@ for src in skills skills-local; do
 	done
 done
 
+# --- 3c. seed hermes cron scripts -------------------------------------------
+# `hermes cron --script <name>` resolves names under ~/.hermes/scripts/. Copy the
+# repo's tick scripts there so `hermes cron create ... --script reminder-tick.py`
+# works. These drive reminders + vault handoffs WITHOUT n8n (see REMINDERS.md).
+if [ -d "$ROOT/scripts/hermes-cron" ]; then
+	echo
+	echo "== seed hermes cron scripts =="
+	mkdir -p "$HOME/.hermes/scripts"
+	cp "$ROOT"/scripts/hermes-cron/*.py "$HOME/.hermes/scripts/" 2>/dev/null && \
+		echo "  seeded $(ls "$ROOT"/scripts/hermes-cron/*.py | xargs -n1 basename | tr '\n' ' ')-> ~/.hermes/scripts/"
+fi
+
 if [ "$ENABLE_HOME" = "1" ]; then
 	cat >> "$(soul "$HOME_NAME")" <<EOF
 

@@ -17,17 +17,25 @@ you (Telegram) → assistant agent runs the "reminders" skill
       │
       ├─ alarm  → writes vault-work/reminders/<id>.md  (status: scheduled)
       │             │
-      │             └─ n8n "Reminder Scheduler" (every minute) sees it come due,
-      │                POSTs to ntfy → phone rings, re-nags until acknowledged,
-      │                one Telegram ping on first fire. Tapping Acknowledge hits
-      │                the "Reminder Ack" webhook, which stops the nagging.
+      │             └─ hermes cron `ghiath-reminders` (every minute) sees it come
+      │                due, POSTs to ntfy → phone rings, re-nags until the
+      │                ackWindowMin elapses, one Telegram ping on first fire.
       │
       └─ calendar → google-workspace skill creates the event (Google fires it)
 ```
 
-The alarm engine is two n8n workflows (`n8n-workflows/reminder-scheduler.json`,
-`reminder-ack.json`) plus the self-hosted `ntfy` container. The skill lives in
+The alarm engine is a **hermes cron job** running `scripts/hermes-cron/reminder-tick.py`
+(no LLM, no n8n) plus the self-hosted `ntfy` container. The skill lives in
 `skills/reminders/` and is seeded into each primary agent by `scripts/hermes.sh`.
+
+> **Note — this replaced the n8n workflows.** Reminders and vault handoffs used to
+> run as n8n workflows (`reminder-scheduler.json`, `reminder-ack.json`,
+> `vault-watch.json`, `vault-notify.json`). They now run as `hermes cron` jobs
+> driving plain scripts, which is deterministic, costs no tokens, needs no extra
+> container, and avoids the unavailable Local File Trigger node. The n8n JSONs are
+> kept for reference; deactivate them in n8n if you migrated. Tap-to-acknowledge
+> (stopping the nag early) is not wired in this version — the alarm self-limits
+> after `ackWindowMin`; it can be re-added later via `hermes webhook`.
 
 ## One-time setup
 
@@ -46,15 +54,14 @@ Caddy gets the TLS cert on first request. Check: `curl https://ntfy.ghiath.id/v1
 
 ### 3. Create the ntfy user + publish token
 ntfy runs deny-all, so nothing works until you make a user (for the phone) and a
-token (for n8n):
+token (for the reminder tick to publish with):
 ```bash
 sudo docker compose exec ntfy ntfy user add --role=admin ghiath   # set a password
 sudo docker compose exec ntfy ntfy token add ghiath               # prints tk_...
 ```
-Put the token in `.env` and recreate n8n so it can publish:
+Put the token in `.env` (the tick script reads it from there):
 ```bash
 # .env:  NTFY_TOKEN=tk_xxxxxxxx
-sudo docker compose --profile prod up -d n8n
 ```
 
 ### 4. Install the ntfy app on your phone
@@ -64,11 +71,23 @@ sudo docker compose --profile prod up -d n8n
 - On that subscription, enable **"Override Do Not Disturb"** (and set a loud
   sound). This is what turns a push into an alarm you can't sleep through.
 
-### 5. Import the n8n workflows
-In n8n (https://n8n.ghiath.id): Import from File →
-`n8n-workflows/reminder-scheduler.json` and `reminder-ack.json`. **Activate
-both.** The scheduler needs to be active to poll; the ack webhook needs to be
-active to receive the button tap.
+### 5. Register the hermes cron jobs
+Seed the tick scripts and register the jobs (both run every minute, no LLM):
+```bash
+cd ~/ghiath && ./scripts/hermes.sh        # copies tick scripts to ~/.hermes/scripts/
+# or copy by hand: cp scripts/hermes-cron/*.py ~/.hermes/scripts/
+
+hermes cron create '1m' --no-agent --script reminder-tick.py \
+    --deliver telegram --name ghiath-reminders
+hermes cron create '1m' --no-agent --script vault-tick.py \
+    --deliver telegram --name ghiath-vault
+
+hermes cron status      # confirm the scheduler is running
+hermes cron list        # see both jobs
+```
+`ghiath-vault` also replaces the old vault-watch/vault-notify workflows (agent
+handoffs + pushing finished results to Telegram). If you previously imported the
+n8n reminder/vault workflows, deactivate them so nothing runs twice.
 
 ### 6. (Optional) Calendar
 The calendar channel uses the built-in `google-workspace` skill. The first time
