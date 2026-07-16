@@ -15,3 +15,6 @@ vault-home/
 .env.bak
 livesync-bridge/config.json
 ntfy/data/
+# Private, machine-local hermes skills. Seeded into agents by hermes.sh but
+# never pushed — personal/proprietary skills live here (see README).
+skills-local/

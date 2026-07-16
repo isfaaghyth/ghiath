@@ -413,6 +413,27 @@ subscription — that is what makes it an alarm rather than a passive push.
 Full step-by-step (DNS, app config, importing/activating the workflows,
 optional calendar OAuth) is in **`REMINDERS.md`**.
 
+## Private data & skills
+
+Some knowledge is personal or proprietary and must never land in this repo. The
+convention keeps two things machine-local:
+
+- **The data** lives *outside* this repo entirely — clone it somewhere like
+  `~/private-data/<name>` on the host. (Do not drop it into `vault-work/`: that
+  folder is tracked, so it would be pushed.) Agents run on the host, so they can
+  read that path directly; `git pull` there to refresh it.
+- **The skill** that reads it lives in `skills-local/` (gitignored). `hermes.sh`
+  seeds `skills-local/` into every primary agent exactly like the shared
+  `skills/`, so a private skill is durable across re-provisions yet never
+  pushed. Write a `skills-local/<name>/SKILL.md` that tells the agent where the
+  files are and how to extract text from them (e.g. `pdftotext`, or python for
+  `.docx`), then re-run `scripts/hermes.sh` (or copy it into
+  `~/.hermes/profiles/<agent>/skills/custom/` by hand).
+
+This mirrors how secrets are handled elsewhere: `.env`, `agents.conf`, and
+`livesync-bridge/config.json` are all gitignored while their `*.example`
+templates are tracked.
+
 ## Deployment
 
 Caddy provides automatic HTTPS and is the only piece meant for the VPS. It runs
