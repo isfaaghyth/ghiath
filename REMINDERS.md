@@ -79,13 +79,16 @@ Seed the tick scripts and register the jobs (both run every minute, no LLM):
 # family-group bot. `make seed-cron` only copies files.
 cd ~/ghiath && make seed-cron        # == ./scripts/seed-cron.sh
 
-hermes cron create '1m' --no-agent --script reminder-tick.py \
+# Use a cron expression for RECURRING. A bare duration like '1m' means "once,
+# 1 minute from now" (Repeat: 0/1) — it fires once and stops. '* * * * *' runs
+# every minute; 'every 1m' is equivalent.
+hermes cron create '* * * * *' --no-agent --script reminder-tick.py \
     --deliver telegram --name ghiath-reminders
-hermes cron create '1m' --no-agent --script vault-tick.py \
+hermes cron create '* * * * *' --no-agent --script vault-tick.py \
     --deliver telegram --name ghiath-vault
 
 hermes cron status      # confirm the scheduler is running
-hermes cron list        # see both jobs
+hermes cron list        # both jobs, each RECURRING (not "once in ...")
 ```
 `ghiath-vault` also replaces the old vault-watch/vault-notify workflows (agent
 handoffs + pushing finished results to Telegram). If you previously imported the
