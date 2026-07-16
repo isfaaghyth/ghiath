@@ -7,6 +7,17 @@
 # installs a per-profile gateway on its own port. Run it again any time to reset
 # to a known-good state.
 #
+# WARNING: this is DESTRUCTIVE. It runs `hermes profile delete` on every
+# configured agent and reinstalls their gateways, so every live Telegram/Discord
+# binding drops and reconnects. Do NOT run it just to copy files. Two things are
+# easy to lose:
+#   - nyai (the home/family bot) is only provisioned with ENABLE_HOME=1. Without
+#     that flag this script does not touch nyai, so a churn can leave it dark.
+#   - pass your KeiRouter virtual key, or the recreated agents have no api_key
+#     and answer nothing (401).
+# To restore everything after an accidental run:
+#   ENABLE_HOME=1 ./scripts/hermes.sh <keirouter-virtual-key>
+#
 # All names, models, vault folders, and ports are configuration, not hardcoded.
 # Copy agents.conf.example to agents.conf and edit it:
 #
