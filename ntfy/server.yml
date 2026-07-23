@@ -1,16 +1,32 @@
 # ntfy - self-hosted push server for Ghiath's urgent reminder alarms.
 #
 # Reached publicly at https://ntfy.ghiath.id (Caddy terminates TLS and proxies
-# to this container on the compose network). n8n publishes to it internally at
-# http://ntfy:80; your Android phone subscribes over the public URL.
+# to this container on the compose network). scripts/hermes-cron/reminder-tick.py
+# publishes to it on the host loopback; the phones subscribe over the public URL.
+#
+# Two topics, one per agent, and they are kept apart on purpose:
+#   ghiath-work-alarm   work reminders      -> your phone only
+#   ghiath-home-alarm   household reminders -> both phones
 #
 # Auth is deny-all by default: a public ntfy with open topics would let anyone
-# who guesses the topic read your reminders or blast alarms at your phone. After
-# first start, create a user and a publish token (see REMINDERS.md):
-#   docker compose exec ntfy ntfy user add --role=admin ghiath
-#   docker compose exec ntfy ntfy token add ghiath      # -> put in .env NTFY_TOKEN
+# who guesses a topic read your reminders or blast alarms at your phone. Access
+# is then granted per user, per topic, which is what actually stops a household
+# device from reading work alarms. After first start (see REMINDERS.md):
 #
-# base-url is intentionally NOT set here — it is domain-specific, so it comes
+#   # publisher, used by the reminder tick via NTFY_TOKEN
+#   docker compose exec ntfy ntfy user add --role=admin ghiath
+#   docker compose exec ntfy ntfy token add ghiath      # -> .env NTFY_TOKEN
+#
+#   # your phone: both topics
+#   docker compose exec ntfy ntfy user add isfa
+#   docker compose exec ntfy ntfy access isfa ghiath-work-alarm rw
+#   docker compose exec ntfy ntfy access isfa ghiath-home-alarm rw
+#
+#   # household phone: the home topic and nothing else
+#   docker compose exec ntfy ntfy user add rumah
+#   docker compose exec ntfy ntfy access rumah ghiath-home-alarm rw
+#
+# base-url is intentionally NOT set here - it is domain-specific, so it comes
 # from the environment (NTFY_BASE_URL in .env, wired through docker-compose.yml).
 # ntfy maps every env var NTFY_<KEY> onto the matching server.yml key.
 

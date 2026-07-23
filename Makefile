@@ -5,7 +5,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help bootstrap up deploy down restart ps logs couch-init test secrets pull update clean reinstall hermes-info seed-cron
+.PHONY: help bootstrap up addon deploy down restart ps logs couch-init test secrets sync-env agents pull update clean reinstall hermes-info seed-cron
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -14,14 +14,17 @@ help: ## Show this help
 bootstrap: ## First-run local setup: secrets + up + wait + couch-init
 	@./scripts/bootstrap.sh local
 
-up: ## Start the local stack (no Caddy)
+up: ## Start the local stack (no Caddy, no n8n)
 	@docker compose up -d
+
+addon: ## Start the optional n8n add-on alongside the stack
+	@docker compose --profile addon up -d
 
 deploy: ## Start the production stack (adds Caddy). Fill .env prod values first.
 	@./scripts/bootstrap.sh prod
 
 down: ## Stop and remove containers (keeps data volumes)
-	@docker compose --profile prod down
+	@docker compose --profile prod --profile addon down
 
 restart: ## Restart the local stack
 	@docker compose restart
@@ -38,6 +41,12 @@ couch-init: ## (Re)apply CouchDB config for Obsidian LiveSync
 test: ## Smoke-test every running service
 	@./scripts/smoke-test.sh
 
+sync-env: ## Project agents.conf into .env + livesync-bridge config
+	@./scripts/sync-env.sh --write
+
+agents: ## (Re)provision the two hermes agents - safe, keeps sessions + Telegram (K=keirouter-key)
+	@./scripts/hermes.sh $(K)
+
 secrets: ## Print fresh random secrets you can paste into .env
 	@echo "KEIROUTER_MASTER_KEY=$$(openssl rand -base64 32)"
 	@echo "N8N_ENCRYPTION_KEY=$$(openssl rand -hex 24)"
@@ -53,8 +62,8 @@ update: pull ## Pull latest images and recreate (N8N_ENCRYPTION_KEY must stay st
 
 clean: ## DANGER: stop and delete all containers AND data volumes
 	@echo "This deletes caddy cert volumes and stops everything."
-	@echo "Bind-mounted data (couchdb/, qdrant/, n8n/, vault/) is NOT touched."
-	@docker compose --profile prod down -v
+	@echo "Bind-mounted data (couchdb/, qdrant/, n8n/, the vaults) is NOT touched."
+	@docker compose --profile prod --profile addon down -v
 
 reinstall: ## Force reinstall: pick a reset level, rebuild stack + reprovision agents (K=keirouter-key)
 	@./scripts/force-reinstall.sh $(K)

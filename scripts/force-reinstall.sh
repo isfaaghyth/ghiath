@@ -9,8 +9,11 @@
 #   ./scripts/force-reinstall.sh [keirouter-virtual-key]
 #
 # The virtual key is passed through to hermes.sh so the agents reconnect to
-# KeiRouter. Without it, agents are recreated but left without an api_key (set
-# it later with ./scripts/keirouter-connect.sh).
+# KeiRouter. Without it, the agents keep whatever key they already had.
+#
+# The Docker levels below only ever touch Docker state. The host-side agents are
+# re-provisioned by hermes.sh, which is non-destructive: profiles, sessions,
+# memories and Telegram bindings survive every level, including 3.
 #
 # Flags / env:
 #   --yes            skip the final confirmation prompt (for automation)
@@ -40,16 +43,12 @@ elif [ -f "$ROOT/agents.conf.example" ]; then
 	# shellcheck disable=SC1091
 	source "$ROOT/agents.conf.example"
 fi
-PRIMARY_VAULT="${PRIMARY_VAULT:-vault}"
+WORK_VAULT="${WORK_VAULT:-vault-work}"
 HOME_VAULT="${HOME_VAULT:-vault-home}"
-ENABLE_HOME="${ENABLE_HOME:-0}"
 
 compose() { # run docker compose with the right profiles for the chosen mode
 	local profiles=()
 	[ "$MODE" = "prod" ] && profiles+=(--profile prod)
-	# Without this the home-side indexer stays down while hermes.sh still creates
-	# the home agent, leaving its vault silently unindexed.
-	[ "$ENABLE_HOME" = "1" ] && profiles+=(--profile home)
 	docker compose "${profiles[@]+"${profiles[@]}"}" "$@"
 }
 
@@ -128,9 +127,14 @@ fi
 # The vaults belong here too: if compose mounts a vault that does not exist yet,
 # the docker daemon creates it as root, and the host-side hermes.sh then cannot
 # write the agent folders into it ("mkdir: Permission denied").
-# Both vaults unconditionally: livesync-bridge mounts each one whether or not the
-# home side is enabled, and a mount target docker has to invent becomes root-owned.
-mkdir -p n8n keirouter couchdb qdrant "$PRIMARY_VAULT" "$HOME_VAULT"
+# Both vaults: livesync-bridge and the two indexers mount them, and a mount
+# target docker has to invent becomes root-owned.
+mkdir -p n8n keirouter couchdb qdrant "$WORK_VAULT" "$HOME_VAULT"
+
+# Keep .env and livesync-bridge/config.json in step with agents.conf before
+# compose interpolates them. Without this a renamed vault silently mounts the
+# old (empty) folder.
+./scripts/sync-env.sh --write
 
 echo
 echo "== rebuilding stack =="
@@ -153,7 +157,7 @@ wait_http "qdrant"    "http://localhost:6333/healthz"
 # /_up (not /) - CouchDB answers / while still initializing a fresh data dir.
 wait_http "couchdb"   "http://localhost:5984/_up"
 wait_http "keirouter" "http://localhost:20180/"
-wait_http "n8n"       "http://localhost:5678/"
+# n8n is an opt-in add-on ("addon" profile) and is not expected to be running.
 
 # --- couchdb init -----------------------------------------------------------
 echo
@@ -163,7 +167,7 @@ echo "== couchdb init for LiveSync =="
 # --- reprovision host agents ------------------------------------------------
 if [ "$SKIP_AGENTS" = "0" ]; then
 	echo
-	echo "== reprovision hermes agents =="
+	echo "== reprovision hermes agents (non-destructive) =="
 	if command -v hermes >/dev/null 2>&1; then
 		if [ -n "$VKEY" ]; then
 			./scripts/hermes.sh "$VKEY"
@@ -180,8 +184,6 @@ echo
 echo "== done =="
 echo "Smoke-test:  make test"
 if [ "$LEVEL" = "3" ]; then
-	echo "Level 3 was destructive. Remember to:"
-	echo "  - re-import n8n workflows (n8n-workflows/*.json) via the n8n UI"
-	echo "  - re-add provider keys / mint a virtual key in KeiRouter"
+	echo "Level 3 was destructive. Remember to re-add provider keys and mint a"
+	echo "virtual key in KeiRouter, then: ./scripts/keirouter-connect.sh <kr_key>"
 fi
-echo "If you changed the workflow JSON, re-import router.json + vault-watch.json in n8n."

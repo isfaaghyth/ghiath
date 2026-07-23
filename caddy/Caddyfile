@@ -8,11 +8,15 @@
 # volume across restarts.
 #
 # Auth model: only Caddy (80/443) is public; every upstream binds to 127.0.0.1.
-# Each app provides its own authentication (n8n owner account, KeiRouter
-# dashboard login, hermes gateway auth), so basic_auth is applied ONLY where a
-# human-facing dashboard benefits from an extra gate - not in front of full web
-# apps or API endpoints, where it causes repeated prompts (SPA/websocket) or
-# collides with Bearer tokens (API calls).
+# Each app provides its own authentication (KeiRouter dashboard login, CouchDB
+# user/password, ntfy tokens, n8n owner account), so basic_auth is applied ONLY
+# where a human-facing dashboard benefits from an extra gate - not in front of
+# full web apps or API endpoints, where it causes repeated prompts
+# (SPA/websocket) or collides with Bearer tokens (API calls).
+#
+# The agents are deliberately absent from this file. A hermes gateway is a
+# Telegram poller, not an inbound HTTP server, so there is nothing to proxy and
+# nothing that needs to be publicly reachable.
 
 {
 	email {$ACME_EMAIL}
@@ -30,16 +34,11 @@ ghiath.id {
 	respond "hello world"
 }
 
-# hermes gateway - OpenAI-compatible API on the host (default port 8642).
-# No basic_auth: it is an API endpoint (Bearer tokens would collide with Basic
-# auth), and hermes enforces its own auth on a public bind.
-hermes.ghiath.id {
-	reverse_proxy host.docker.internal:8642
-}
-
-# n8n - has its own owner-account login. No basic_auth: layering it over n8n's
-# SPA and websocket connection causes the auth prompt to reappear as you
-# navigate.
+# n8n - the optional add-on. This block only resolves to anything when the
+# "addon" compose profile is running; otherwise Caddy returns a 502 here, which
+# is the intended behaviour. No basic_auth: layering it over n8n's SPA and
+# websocket connection causes the auth prompt to reappear as you navigate, and
+# n8n has its own owner-account login.
 n8n.ghiath.id {
 	reverse_proxy n8n:5678
 }
@@ -68,7 +67,7 @@ couch.ghiath.id {
 
 # ntfy - urgent push for reminder alarms. No basic_auth: ntfy runs deny-all with
 # its own users and publish tokens, and a second layer would break both the
-# phone's subscription and n8n's token-authenticated publish.
+# phones' subscriptions and the reminder tick's token-authenticated publish.
 ntfy.ghiath.id {
 	reverse_proxy ntfy:80
 }

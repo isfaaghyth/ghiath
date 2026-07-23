@@ -7,8 +7,14 @@ keirouter/
 couchdb/
 qdrant/
 caddy/data/
-vault/
-vault-home/
+
+# Every vault, whatever it is named. This is a wildcard on purpose: the vault
+# folder names are configurable in agents.conf, and a rename (vault ->
+# vault-work) previously left the new folder tracked, which would have pushed
+# private notes to the public repo the moment one was written.
+vault*/
+obsidian-vault/
+
 .DS_Store
 .idea/
 .vscode/

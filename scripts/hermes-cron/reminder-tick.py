@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Ghiath reminder tick — run by `hermes cron` in --no-agent mode, every minute.
+"""Ghiath reminder tick - run by `hermes cron` in --no-agent mode, every minute.
 
-Scans the vault's reminders/ folder, fires an ntfy phone alarm when a reminder
+Scans each vault's reminders/ folder, fires an ntfy phone alarm when a reminder
 comes due, and re-nags (up to ackWindowMin) until the window elapses. Because it
 runs under `hermes cron --no-agent --deliver telegram`, ANYTHING printed to
-stdout is delivered to the Telegram chat — so we print a one-line ping on first
+stdout is delivered to the Telegram chat - so we print a one-line ping on first
 fire and stay silent otherwise. ntfy is published directly here; Telegram is just
 stdout. No n8n, no LLM.
 
-Install (on the host, once):
-    cp scripts/hermes-cron/reminder-tick.py ~/.hermes/scripts/
-    hermes cron create '1m' --no-agent --script reminder-tick.py \
+Both vaults are scanned, so either agent can set an alarm by writing a note.
+Each reminder is published to its own ntfy topic, so a household reminder does
+not ring on a phone subscribed only to the work topic (and vice versa).
+
+Install it once per profile that should deliver reminders:
+    ./scripts/seed-cron.sh
+    hermes cron create '*/1 * * * *' --no-agent --script reminder-tick.py \
         --deliver telegram --name ghiath-reminders
 
 Config is read from <GHIATH_ROOT>/.env (GHIATH_ROOT defaults to ~/ghiath):
-NTFY_TOPIC, NTFY_TOKEN, and PRIMARY_VAULT. ntfy is reached on the host loopback
-(127.0.0.1:8080, the port the container publishes).
+NTFY_TOPIC, NTFY_HOME_TOPIC, NTFY_TOKEN, WORK_VAULT and HOME_VAULT. ntfy is
+reached on the host loopback (127.0.0.1:8080, the port the container publishes).
 """
 import json
 import os
@@ -86,18 +90,12 @@ def publish_ntfy(topic: str, token: str, title: str, message: str, priority: int
         resp.read()
 
 
-def main() -> int:
-    env = load_env(GHIATH_ROOT / ".env")
-    topic = env.get("NTFY_TOPIC", "ghiath-alarm")
-    token = env.get("NTFY_TOKEN", "")
-    vault = env.get("PRIMARY_VAULT", "vault-work")
-    reminders = GHIATH_ROOT / vault / "reminders"
-
+def scan_vault(reminders: Path, topic: str, token: str, pings: list) -> None:
+    """Fire every due reminder in one vault's reminders/ folder."""
     if not reminders.is_dir():
-        return 0
+        return
 
     now = time.time()
-    pings = []
 
     for fp in sorted(reminders.glob("*.md")):
         try:
@@ -152,7 +150,7 @@ def main() -> int:
                 log(f"ntfy publish failed for {fp.name}: {e}")
 
         if first_fire:
-            pings.append(f"⏰ {title}\n{message}")
+            pings.append(f"Reminder: {title}\n{message}")
 
         if new_status or first_fire:
             block = parsed["block"]
@@ -165,6 +163,28 @@ def main() -> int:
                 fp.write_text(f"---\n{block}\n---{rest}", encoding="utf-8")
             except OSError as e:
                 log(f"status write failed for {fp.name}: {e}")
+
+
+def main() -> int:
+    env = load_env(GHIATH_ROOT / ".env")
+    token = env.get("NTFY_TOKEN", "")
+    # Two separate topics, one per side. They must never collapse into one: the
+    # household phone is subscribed to the home topic only, so publishing a home
+    # reminder to the work topic would mean it never reaches the person it was
+    # set for. Defaults are the predefined names, not a fallback to each other.
+    work_topic = env.get("NTFY_TOPIC") or "ghiath-work-alarm"
+    home_topic = env.get("NTFY_HOME_TOPIC") or "ghiath-home-alarm"
+    if work_topic == home_topic:
+        log(f"WARNING: work and home ntfy topics are both '{work_topic}'; "
+            "household reminders will ring on the work subscription too")
+
+    pings: list = []
+    for vault_key, default_dir, topic in (
+        ("WORK_VAULT", "vault-work", work_topic),
+        ("HOME_VAULT", "vault-home", home_topic),
+    ):
+        vault = env.get(vault_key, default_dir)
+        scan_vault(GHIATH_ROOT / vault / "reminders", topic, token, pings)
 
     # stdout -> Telegram (only when there's something to say)
     if pings:

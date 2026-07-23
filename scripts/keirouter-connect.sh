@@ -29,11 +29,9 @@ command -v hermes >/dev/null 2>&1 || { echo "hermes not on PATH" >&2; exit 1; }
 
 # Load the configured agent names (falls back to the shipped defaults).
 if [ -f "$ROOT/agents.conf" ]; then source "$ROOT/agents.conf"; elif [ -f "$ROOT/agents.conf.example" ]; then source "$ROOT/agents.conf.example"; fi
-ASSISTANT_NAME="${ASSISTANT_NAME:-assistant}"
-ENGINEER_NAME="${ENGINEER_NAME:-engineer}"
-RESEARCHER_NAME="${RESEARCHER_NAME:-researcher}"
-PROFILES="$ASSISTANT_NAME $ENGINEER_NAME $RESEARCHER_NAME"
-[ "${ENABLE_HOME:-0}" = "1" ] && PROFILES="$PROFILES ${HOME_NAME:-home}"
+WORK_NAME="${WORK_NAME:-work}"
+HOME_NAME="${HOME_NAME:-home}"
+PROFILES="$WORK_NAME $HOME_NAME"
 
 for p in $PROFILES; do
 	hermes profile show "$p" >/dev/null 2>&1 || { echo "skip $p (no such profile)"; continue; }
@@ -44,6 +42,6 @@ for p in $PROFILES; do
 done
 
 echo
-echo "Done. Test one:  $ASSISTANT_NAME -z 'say hello in 3 words'"
+echo "Done. Test one:  $WORK_NAME -z 'say hello in 3 words'"
 echo "If it 401s, the virtual key is wrong. If it errors upstream, add the"
 echo "provider key for that model inside the KeiRouter dashboard."

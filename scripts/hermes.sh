@@ -1,44 +1,53 @@
 #!/usr/bin/env bash
 #
-# hermes.sh - clean up and (re)provision the Ghiath agents on this host.
+# hermes.sh - provision the two Ghiath agents on this host.
 #
-# Idempotent. It deletes and recreates the configured profiles, points them at
-# KeiRouter, writes each one's role into its SOUL.md, seeds the vault, and
-# installs a per-profile gateway on its own port. Run it again any time to reset
-# to a known-good state.
+# SAFE BY DEFAULT. This script is idempotent and NON-DESTRUCTIVE: it creates a
+# profile only if it is missing, and otherwise reconfigures the existing one in
+# place. Run it after every `git pull` without losing anything.
 #
-# WARNING: this is DESTRUCTIVE. It runs `hermes profile delete` on every
-# configured agent and reinstalls their gateways, so every live Telegram/Discord
-# binding drops and reconnects. Do NOT run it just to copy files. Two things are
-# easy to lose:
-#   - nyai (the home/family bot) is only provisioned with ENABLE_HOME=1. Without
-#     that flag this script does not touch nyai, so a churn can leave it dark.
-#   - pass your KeiRouter virtual key, or the recreated agents have no api_key
-#     and answer nothing (401).
-# To restore everything after an accidental run:
-#   ENABLE_HOME=1 ./scripts/hermes.sh <keirouter-virtual-key>
+# What is deliberately preserved across runs:
+#   - the profile's sessions/, memories/, logs/ and workspace/
+#   - the profile's .env, which holds the Telegram bot token, so an already
+#     authorized bot keeps its binding and does not need re-pairing
+#   - anything already in the vault; seeding never overwrites an existing file
 #
-# All names, models, vault folders, and ports are configuration, not hardcoded.
-# Copy agents.conf.example to agents.conf and edit it:
+# The role text in SOUL.md is written inside a marked block and replaced whole
+# on each run, so re-running updates the role without duplicating it and without
+# touching anything you added to that file by hand outside the block.
 #
 #   cp agents.conf.example agents.conf
 #   ./scripts/hermes.sh [keirouter-virtual-key]
 #
-# The virtual key is optional; without it the profiles are configured but have
-# no api_key (set it later with ./scripts/keirouter-connect.sh). Any value in
-# agents.conf can also be overridden inline, e.g.:
-#   RESEARCHER_MODEL=z-ai/glm-4.6 ./scripts/hermes.sh
+# The virtual key is optional; without it existing keys are left alone and a
+# freshly created profile has none (set it later with keirouter-connect.sh).
+# Any value in agents.conf can be overridden inline:
+#   WORK_MODEL=z-ai/glm-5.1 ./scripts/hermes.sh
 #
-# Set INSTALL_GATEWAYS=0 to configure the profiles but skip installing the
-# background gateway services. Set ENABLE_HOME=1 to also provision the isolated
-# "home" assistant.
+# Flags / env:
+#   --reset            DESTRUCTIVE opt-in: delete and recreate both profiles.
+#                      Wipes sessions, memories and the Telegram binding. Only
+#                      use this to recover a genuinely broken profile.
+#   INSTALL_GATEWAYS=0 configure the profiles but do not touch the gateway
+#                      services (leaves a running bot completely undisturbed).
 
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Read a single value from a file without sourcing it (values may contain '$').
-getenv_file() { grep -E "^$2=" "$1" 2>/dev/null | head -n1 | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//"; }
+# The '|| true' is load-bearing: a missing key is normal, but grep exits 1 on no
+# match and `set -o pipefail` would otherwise abort the entire script.
+getenv_file() { { grep -E "^$2=" "$1" 2>/dev/null || true; } | head -n1 | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//"; }
+
+RESET=0
+ARGS=()
+for a in "$@"; do
+	case "$a" in
+		--reset) RESET=1 ;;
+		*) ARGS+=("$a") ;;
+	esac
+done
 
 # --- load configuration -----------------------------------------------------
 # agents.conf holds the (possibly personalized) config; agents.conf.example is
@@ -54,41 +63,64 @@ elif [ -f "$ROOT/agents.conf.example" ]; then
 	echo "config: agents.conf.example (defaults; copy it to agents.conf to customize)"
 fi
 
+# agents.conf is gitignored, so a `git pull` never updates it. A box still
+# carrying the three-agent config would silently fall through to the WORK_/HOME_
+# defaults below and provision two BRAND NEW profiles, orphaning the real ones
+# and leaving their Telegram bots dark. Fail loudly instead.
+if [ -z "${WORK_NAME:-}" ] && [ -n "${ASSISTANT_NAME:-}${ENGINEER_NAME:-}${RESEARCHER_NAME:-}${PRIMARY_VAULT:-}" ]; then
+	cat >&2 <<EOF
+
+ERROR: agents.conf is still in the old three-agent format.
+
+  It defines ASSISTANT_NAME / ENGINEER_NAME / RESEARCHER_NAME / PRIMARY_VAULT,
+  but this version expects WORK_* and HOME_*. agents.conf is gitignored, so
+  'git pull' does not migrate it for you.
+
+  Rewrite it, keeping the names of the profiles you already have so their
+  sessions and Telegram bindings are reused rather than abandoned:
+
+    WORK_NAME="\${ASSISTANT_NAME:-work}"   # the profile your bot already uses
+    WORK_MODEL="opencode/z-ai/glm-5.1"
+    WORK_PORT="8642"
+    WORK_VAULT="\${PRIMARY_VAULT:-vault-work}"
+    WORK_COLLECTION="\${PRIMARY_COLLECTION:-vault_work}"
+    WORK_CONFIRM_GATE="1"
+
+    HOME_NAME="\${HOME_NAME:-home}"
+    HOME_MODEL="openrouter/deepseek/deepseek-v4-flash"
+    HOME_PORT="8645"
+    HOME_VAULT="\${HOME_VAULT:-vault-home}"
+    HOME_COLLECTION="\${HOME_COLLECTION:-vault_home}"
+
+  See agents.conf.example for the annotated template.
+
+EOF
+	exit 1
+fi
+
 KEIROUTER_BASE_URL="${KEIROUTER_BASE_URL:-http://localhost:20180/v1}"
-VKEY="${1:-${KEIROUTER_VIRTUAL_KEY:-}}"
+VKEY="${ARGS[0]:-${KEIROUTER_VIRTUAL_KEY:-}}"
 INSTALL_GATEWAYS="${INSTALL_GATEWAYS:-1}"
 
-# Primary side (defaults mirror agents.conf.example so the script is safe even
-# with no config file present).
-ASSISTANT_NAME="${ASSISTANT_NAME:-assistant}"
-ASSISTANT_MODEL="${ASSISTANT_MODEL:-deepseek/deepseek-v2-flash}"
-ASSISTANT_FOLDER="${ASSISTANT_FOLDER:-scratchpads}"
-ASSISTANT_PORT="${ASSISTANT_PORT:-8642}"
+WORK_NAME="${WORK_NAME:-work}"
+WORK_MODEL="${WORK_MODEL:-z-ai/glm-5.1}"
+WORK_PORT="${WORK_PORT:-8642}"
+WORK_VAULT="${WORK_VAULT:-vault-work}"
+WORK_CONFIRM_GATE="${WORK_CONFIRM_GATE:-1}"
 
-ENGINEER_NAME="${ENGINEER_NAME:-engineer}"
-ENGINEER_MODEL="${ENGINEER_MODEL:-anthropic/claude-opus-4-8}"
-ENGINEER_SUBAGENT_MODEL="${ENGINEER_SUBAGENT_MODEL:-anthropic/claude-sonnet-5}"
-ENGINEER_FOLDER="${ENGINEER_FOLDER:-projects}"
-ENGINEER_PORT="${ENGINEER_PORT:-8643}"
-
-RESEARCHER_NAME="${RESEARCHER_NAME:-researcher}"
-RESEARCHER_MODEL="${RESEARCHER_MODEL:-z-ai/glm-4.6}"
-RESEARCHER_FOLDER="${RESEARCHER_FOLDER:-memory}"
-RESEARCHER_PORT="${RESEARCHER_PORT:-8644}"
-
-PRIMARY_VAULT="${PRIMARY_VAULT:-vault}"
-PRIMARY_TELEGRAM_AGENT="${PRIMARY_TELEGRAM_AGENT:-$ASSISTANT_NAME}"
-
-# Home side (optional, isolated).
-ENABLE_HOME="${ENABLE_HOME:-0}"
 HOME_NAME="${HOME_NAME:-home}"
-HOME_MODEL="${HOME_MODEL:-deepseek/deepseek-v2-flash}"
+HOME_MODEL="${HOME_MODEL:-deepseek/deepseek-v4-flash}"
 HOME_PORT="${HOME_PORT:-8645}"
 HOME_VAULT="${HOME_VAULT:-vault-home}"
 
-# Telegram tokens come from .env (secrets), never from agents.conf.
-TG_TOKEN="${TELEGRAM_BOT_TOKEN:-$(getenv_file "$ROOT/.env" TELEGRAM_BOT_TOKEN)}"
+# Telegram tokens come from .env (secrets), never from agents.conf. The work
+# agent accepts the older TELEGRAM_BOT_TOKEN name so an existing .env keeps
+# working untouched.
+WORK_TG_TOKEN="${WORK_TELEGRAM_BOT_TOKEN:-$(getenv_file "$ROOT/.env" WORK_TELEGRAM_BOT_TOKEN)}"
+[ -z "$WORK_TG_TOKEN" ] && WORK_TG_TOKEN="${TELEGRAM_BOT_TOKEN:-$(getenv_file "$ROOT/.env" TELEGRAM_BOT_TOKEN)}"
 HOME_TG_TOKEN="${HOME_TELEGRAM_BOT_TOKEN:-$(getenv_file "$ROOT/.env" HOME_TELEGRAM_BOT_TOKEN)}"
+
+AGENTS="$WORK_NAME $HOME_NAME"
 
 # --- preflight --------------------------------------------------------------
 command -v hermes >/dev/null 2>&1 || {
@@ -99,151 +131,221 @@ command -v hermes >/dev/null 2>&1 || {
 }
 echo "hermes: $(hermes --version 2>/dev/null | head -1)"
 
-PRIMARY_AGENTS="$ASSISTANT_NAME $ENGINEER_NAME $RESEARCHER_NAME"
-ALL_AGENTS="$PRIMARY_AGENTS"
-[ "$ENABLE_HOME" = "1" ] && ALL_AGENTS="$ALL_AGENTS $HOME_NAME"
-PRIMARY_PORTS="$ASSISTANT_PORT $ENGINEER_PORT $RESEARCHER_PORT"
+# --- 1. reset (opt-in only) -------------------------------------------------
+if [ "$RESET" = "1" ]; then
+	echo
+	echo "== reset (DESTRUCTIVE) =="
+	echo "This deletes the profiles, including their sessions, memories, and"
+	echo "Telegram bindings. Both bots will need to be re-authorized."
+	printf "Type 'reset' to confirm: "
+	read -r ans
+	[ "$ans" = "reset" ] || { echo "aborted."; exit 0; }
+	for a in $AGENTS; do
+		"$a" gateway uninstall </dev/null >/dev/null 2>&1 || true
+		hermes profile delete -y "$a" </dev/null >/dev/null 2>&1 || true
+		echo "  deleted $a"
+	done
+fi
 
-# --- 1. clean up ------------------------------------------------------------
-# '</dev/null' guarantees no command blocks on a prompt; '|| true' tolerates
-# services or profiles that do not exist yet, so cleanup never aborts.
+# --- 2. create (only if missing) and configure ------------------------------
 echo
-echo "== cleanup =="
-# Remove the default profile's gateway, which otherwise squats the base port.
-hermes gateway uninstall </dev/null >/dev/null 2>&1 || true
-for a in $ALL_AGENTS; do
-	"$a" gateway uninstall </dev/null >/dev/null 2>&1 || true
-	hermes profile delete -y "$a" </dev/null >/dev/null 2>&1 || true
-	echo "  reset $a"
-done
-
-# --- 2. recreate and configure ----------------------------------------------
-echo
-echo "== create and configure profiles =="
+echo "== profiles =="
 configure() {
 	local name="$1" model="$2"
-	hermes profile create "$name" --description "Ghiath ecosystem agent" </dev/null >/dev/null 2>&1
+	if hermes profile show "$name" >/dev/null 2>&1; then
+		echo "  $name exists, reconfiguring in place (sessions/memories/token kept)"
+	else
+		hermes profile create "$name" --description "Ghiath agent" </dev/null >/dev/null 2>&1
+		echo "  $name created"
+	fi
 	"$name" config set model.default "$model" >/dev/null
 	"$name" config set model.provider custom >/dev/null
 	"$name" config set model.base_url "$KEIROUTER_BASE_URL" >/dev/null
+	# Only overwrite the key when one was supplied, so a run without a key never
+	# strips a working profile's credentials.
 	if [ -n "$VKEY" ]; then
 		"$name" config set model.api_key "$VKEY" >/dev/null
+		echo "    -> $model (keirouter key updated)"
+	else
+		echo "    -> $model (existing api_key left as-is)"
 	fi
-	echo "  $name -> $model (provider=custom, base_url=$KEIROUTER_BASE_URL)"
 }
-configure "$ASSISTANT_NAME" "$ASSISTANT_MODEL"
-configure "$ENGINEER_NAME" "$ENGINEER_MODEL"
-"$ENGINEER_NAME" config set subagents.model "$ENGINEER_SUBAGENT_MODEL" >/dev/null
-echo "  $ENGINEER_NAME subagents -> $ENGINEER_SUBAGENT_MODEL"
-configure "$RESEARCHER_NAME" "$RESEARCHER_MODEL"
-[ "$ENABLE_HOME" = "1" ] && configure "$HOME_NAME" "$HOME_MODEL"
+configure "$WORK_NAME" "$WORK_MODEL"
+configure "$HOME_NAME" "$HOME_MODEL"
 
 # --- 3. write roles into SOUL.md --------------------------------------------
+# The role lives inside a marked block. Each run strips the previous block and
+# appends a fresh one, so the text stays current, never duplicates, and anything
+# you wrote into SOUL.md yourself (outside the markers) survives untouched.
 echo
-echo "== write SOUL.md roles =="
-soul() { echo "$HOME/.hermes/profiles/$1/SOUL.md"; }
+echo "== roles (SOUL.md) =="
+BEGIN_MARK="<!-- ghiath:role:begin - managed by scripts/hermes.sh, edits here are overwritten -->"
+END_MARK="<!-- ghiath:role:end -->"
 
-# Shared note conventions appended to every primary-side profile. Every note an
-# agent writes MUST start with this YAML front-matter. It powers the Obsidian
-# Bases views AND makes handoffs loop-safe: the vault-watch workflow only acts
-# on notes whose status is "open", so an agent writing its own result (status
-# "done", or type "result") never re-triggers itself.
-# Note the backticks are escaped because this heredoc is expanded.
-note_conventions() {
+write_role() { # write_role <profile> ; role body on stdin
+	local soul="$HOME/.hermes/profiles/$1/SOUL.md"
+	local body
+	body="$(cat)"
+	touch "$soul"
+	# Two things are stripped before the fresh block is appended:
+	#  1. the previous managed block, so the role never duplicates;
+	#  2. any role text left by the pre-2026-07 three-agent script, which
+	#     appended without markers. That text names retired agents and the old
+	#     vault layout, so leaving it in place would give the agent two
+	#     contradictory sets of instructions. Everything from the first legacy
+	#     heading to the end of the file was appended by that script.
+	awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+		$0 == b { skip = 1; next }
+		$0 == e { skip = 0; next }
+		skip { next }
+		/^## Your role in the Ghiath ecosystem/ { legacy = 1 }
+		/^## Note format \(required\)/ { legacy = 1 }
+		/^## Your role[[:space:]]*$/ { legacy = 1 }
+		legacy { next }
+		{ print }
+	' "$soul" > "$soul.tmp"
+	# Collapse trailing blank lines, then append the block with one blank line.
+	awk 'NF {p = NR} {lines[NR] = $0} END {for (i = 1; i <= p; i++) print lines[i]}' "$soul.tmp" > "$soul"
+	rm -f "$soul.tmp"
+	{
+		printf '\n%s\n' "$BEGIN_MARK"
+		printf '%s\n' "$body"
+		printf '%s\n' "$END_MARK"
+	} >> "$soul"
+	echo "  wrote role block -> $1"
+}
+
+# Absolute paths. A gateway runs as a background service, so its working
+# directory is not the repo: a relative "vault-work/" would resolve somewhere
+# else entirely and the agent's notes would vanish silently.
+WORK_VAULT_ABS="$ROOT/$WORK_VAULT"
+HOME_VAULT_ABS="$ROOT/$HOME_VAULT"
+
+# The confirmation gate. This is the whole point of the work agent's design:
+# it plans out loud, stops, and does not touch anything until told to go.
+confirm_gate() {
+	cat <<'EOF'
+
+## Confirmation gate (MANDATORY)
+
+Before you execute any technical task, you STOP and ask for confirmation in the
+same Telegram chat, then wait for the reply.
+
+"Technical" means anything that changes state or runs code: writing or editing
+files, running shell commands, installing or upgrading packages, any git
+operation that writes (commit, push, branch, rebase, reset), deploying,
+restarting a service, calling an API that mutates data, or changing
+configuration. Reading, searching, summarizing, explaining, and planning are NOT
+technical tasks - do those immediately and freely, no confirmation needed.
+
+The protocol, every single time:
+
+1. PLAN. Reply with a short plan: what you understood the request to be, the
+   exact steps you intend to take, and which files or services each step
+   touches. Ten lines at most. Do not begin any of it.
+2. ASK. End that message with exactly this line, on its own:
+   Confirm to proceed? (reply "go")
+3. WAIT. Do nothing at all until you get a reply. If the reply is anything other
+   than a clear go-ahead, treat it as "no": answer what was asked or revise the
+   plan, then ask again.
+4. EXECUTE. Once confirmed, carry out the plan you showed - that plan only.
+   If the work turns out to need a step you did not list, stop and return to
+   step 1 for that new step.
+
+One confirmation covers one plan. It never carries over to the next request, and
+it never becomes standing permission. Urgency does not override this gate: if
+something looks urgent, say so in the plan, then still wait.
+EOF
+}
+
+{
 	cat <<EOF
 
+## Your role
 
-## Note format (required)
+You are $WORK_NAME, Isfa's personal work assistant. You are his alone: this is
+the technical side of his life, and nobody else talks to you.
 
-Every Markdown note you create in the vault MUST begin with this YAML
-front-matter, then the body:
+You handle the whole job yourself - thinking, researching, planning, writing,
+and executing. There are no other agents to delegate to and no handoffs; if a
+task needs doing, you are the one who does it.
+
+You own the vault at $WORK_VAULT_ABS/. That is your memory and your workspace.
+Save anything worth keeping there as a Markdown note, and always use that
+absolute path, never a relative one. Search it before answering a question that
+past-you may already have answered.
+EOF
+	[ "$WORK_CONFIRM_GATE" = "1" ] && confirm_gate
+	cat <<EOF
+
+## Note format
+
+Begin every Markdown note you write in the vault with this front-matter, then
+the body:
 
 \`\`\`
 ---
-type: task        # task | brief | result | note
-status: open      # open | doing | done  (only "open" triggers an agent)
-owner: <agent>    # the agent who should act next (you, when it is a result)
-from: <agent>     # who created this note
+type: task        # task | result | note
+status: open      # open | doing | done
+owner: $WORK_NAME
+from: $WORK_NAME
 created: YYYY-MM-DD
 tags: []
 ---
 \`\`\`
 
-Rules:
-- A handoff is an "open" note placed in the target agent's folder, with
-  "owner" set to that agent.
-- When you finish work, write your output as type "result" with status
-  "done" and owner set to yourself. Never leave your own output "open", or
-  you will re-trigger yourself.
-- If you pick up an "open" note, set its status to "doing" while working and
-  "done" when finished.
+This is what the dashboard's Bases views read. Keep "status" honest: "open" for
+something still to do, "done" once it is finished.
 EOF
-}
+} | write_role "$WORK_NAME"
 
-# Absolute paths. A gateway runs as a background service, so its working directory
-# is not the repo: a relative "vault/projects/" would resolve somewhere the n8n
-# vault-watch workflow is not watching, and the handoff would vanish silently.
-VAULT_ABS="$ROOT/$PRIMARY_VAULT"
-HOME_VAULT_ABS="$ROOT/$HOME_VAULT"
+write_role "$HOME_NAME" <<EOF
 
-cat >> "$(soul "$ASSISTANT_NAME")" <<EOF
+## Your role
 
+You are $HOME_NAME, the household assistant. You are shared: Isfa and his wife
+both talk to you, so never assume which of them you are speaking with, and never
+assume something one of them told you is private from the other. If who is
+asking actually changes your answer, just ask.
 
-## Your role in the Ghiath ecosystem
+You help with everyday life: reminders, shopping and to-do lists, plans,
+appointments, quick questions, and journaling. Keep your answers warm, short,
+and in plain language. Match the language you are spoken to in. You are not a
+technical assistant - if a question is really about code, servers, or work,
+say so kindly and leave it.
 
-You are $ASSISTANT_NAME, a lightweight personal assistant for fast everyday tasks.
-You own the vault folder $VAULT_ABS/$ASSISTANT_FOLDER/ as your inbox and workspace.
-To hand off, write an "open" note into another agent's folder: a research brief
-into $VAULT_ABS/$RESEARCHER_FOLDER/ for $RESEARCHER_NAME, or a build request into
-$VAULT_ABS/$ENGINEER_FOLDER/ for $ENGINEER_NAME. An n8n vault-watch workflow triggers them.
-Always write vault notes to these absolute paths, never to a relative path.
+You work only inside your own vault, $HOME_VAULT_ABS/. You do not know about,
+and cannot reach, any other vault or agent. Always write notes to that absolute
+path, never a relative one.
+
+## Note format
+
+Begin every note you save with this front-matter, then the body:
+
+\`\`\`
+---
+type: note
+status: done
+owner: $HOME_NAME
+from: $HOME_NAME
+created: YYYY-MM-DD
+tags: []
+---
+\`\`\`
 EOF
-note_conventions >> "$(soul "$ASSISTANT_NAME")"
 
-cat >> "$(soul "$ENGINEER_NAME")" <<EOF
-
-
-## Your role in the Ghiath ecosystem
-
-You are $ENGINEER_NAME, a software engineer buddy. You plan as an orchestrator with a
-strong model and delegate execution to faster subagents.
-You own the vault folder $VAULT_ABS/$ENGINEER_FOLDER/ as your inbox and workspace.
-You usually receive work when $RESEARCHER_NAME or $ASSISTANT_NAME drops an "open" note into
-$VAULT_ABS/$ENGINEER_FOLDER/. If you need more research, write a brief into
-$VAULT_ABS/$RESEARCHER_FOLDER/ for $RESEARCHER_NAME.
-Always write vault notes to these absolute paths, never to a relative path.
-EOF
-note_conventions >> "$(soul "$ENGINEER_NAME")"
-
-cat >> "$(soul "$RESEARCHER_NAME")" <<EOF
-
-
-## Your role in the Ghiath ecosystem
-
-You are $RESEARCHER_NAME, a researcher who does deep reading and synthesis.
-You own the vault folder $VAULT_ABS/$RESEARCHER_FOLDER/ as your inbox and workspace.
-You usually receive a research brief from $ASSISTANT_NAME in $VAULT_ABS/$RESEARCHER_FOLDER/.
-When findings should be built into something, drop an "open" task note into
-$VAULT_ABS/$ENGINEER_FOLDER/ for $ENGINEER_NAME.
-Always write vault notes to these absolute paths, never to a relative path.
-EOF
-note_conventions >> "$(soul "$RESEARCHER_NAME")"
-echo "  wrote roles + note conventions for $PRIMARY_AGENTS"
-
-# --- 3b. seed repo skills into each primary profile -------------------------
-# hermes recreates profiles from scratch on every run, which wipes any skill
-# placed by hand. Custom skills are copied back in here so they persist. Two
-# sources, both seeded into each primary profile's skills/custom:
+# --- 4. seed skills ---------------------------------------------------------
+# hermes profiles keep their own skills directory. Two sources, both copied into
+# each agent's skills/custom:
 #   skills/        shared skills, tracked in git (e.g. reminders)
 #   skills-local/  PRIVATE skills, gitignored - personal/proprietary content
 #                  that must never be pushed (see README "Private data & skills")
-# Primary agents only: the reminder-scheduler workflow watches the primary vault
-# (/data/vault), so a reminder from the isolated home agent would never fire.
+# Copying is additive; it never removes a skill you placed there by hand.
 for src in skills skills-local; do
 	[ -d "$ROOT/$src" ] || continue
 	echo
 	echo "== seed $src =="
-	for a in $PRIMARY_AGENTS; do
+	for a in $AGENTS; do
 		dest="$HOME/.hermes/profiles/$a/skills/custom"
 		mkdir -p "$dest"
 		cp -R "$ROOT/$src/." "$dest/"
@@ -251,47 +353,26 @@ for src in skills skills-local; do
 	done
 done
 
-# --- 3c. seed hermes cron scripts -------------------------------------------
-# `hermes cron --script <name>` resolves names under ~/.hermes/scripts/. Copy the
-# repo's tick scripts there so `hermes cron create ... --script reminder-tick.py`
-# works. These drive reminders + vault handoffs WITHOUT n8n (see REMINDERS.md).
+# --- 5. seed hermes cron scripts --------------------------------------------
+# `hermes cron --script <name>` resolves names under ~/.hermes/scripts/. These
+# tick scripts are what drive reminders; see REMINDERS.md.
 if [ -d "$ROOT/scripts/hermes-cron" ]; then
 	echo
 	echo "== seed hermes cron scripts =="
-	mkdir -p "$HOME/.hermes/scripts"
-	cp "$ROOT"/scripts/hermes-cron/*.py "$HOME/.hermes/scripts/" 2>/dev/null && \
-		echo "  seeded $(ls "$ROOT"/scripts/hermes-cron/*.py | xargs -n1 basename | tr '\n' ' ')-> ~/.hermes/scripts/"
+	"$ROOT/scripts/seed-cron.sh"
 fi
 
-if [ "$ENABLE_HOME" = "1" ]; then
-	cat >> "$(soul "$HOME_NAME")" <<EOF
-
-
-## Your role
-
-You are $HOME_NAME, a warm, patient personal assistant for everyday life: reminders,
-lists, quick questions, planning, journaling. Keep answers simple and friendly.
-
-You work only within your own vault, $HOME_VAULT_ABS/. You do not know about
-or interact with any other agents or vaults. There are no handoffs: everything
-you do stays in your vault. Always write notes to that absolute path, never to a
-relative path. When you save a note, begin it with YAML
-front-matter (type: note, status: done, owner: $HOME_NAME, from: $HOME_NAME, created:
-today's date, tags: []).
-EOF
-	echo "  wrote role for $HOME_NAME (isolated, no handoffs)"
-fi
-
-# --- 3a. seed the vault (dashboard + Bases views) ---------------------------
-# The vault is created at runtime and gitignored, so seed the observability
-# scaffolding here. Idempotent: existing files are never overwritten.
+# --- 6. seed the vaults -----------------------------------------------------
+# The vaults are created at runtime and gitignored, so seed the scaffolding
+# here. Idempotent and strictly additive: an existing file is NEVER overwritten,
+# so your real notes and any dashboard you customized are safe.
 echo
-echo "== seed vault dashboard + bases =="
-VAULT="$ROOT/$PRIMARY_VAULT"
-mkdir -p "$VAULT/$ASSISTANT_FOLDER" "$VAULT/$ENGINEER_FOLDER" "$VAULT/$RESEARCHER_FOLDER"
+echo "== seed vaults =="
 
 seed() { # seed <path> ; reads content from stdin, skips if the file exists
 	if [ -e "$1" ]; then
+		# Drain stdin so the heredoc does not end up on the terminal.
+		cat >/dev/null
 		echo "  keep   ${1#$ROOT/}"
 	else
 		cat > "$1"
@@ -299,7 +380,9 @@ seed() { # seed <path> ; reads content from stdin, skips if the file exists
 	fi
 }
 
-seed "$VAULT/000-Dashboard.md" <<'EOF'
+mkdir -p "$WORK_VAULT_ABS/reminders"
+
+seed "$WORK_VAULT_ABS/000-Dashboard.md" <<'EOF'
 ---
 type: note
 status: done
@@ -309,14 +392,14 @@ created: 2025-01-01
 tags: [dashboard]
 ---
 
-# Ghiath Dashboard
+# Work Dashboard
 
-Quick capture and a window into what the agents are doing. The live views live
-in the Bases below; this note is just a landing pad.
+Quick capture and a window into what the assistant is doing. The live views are
+the Bases below; this note is just a landing pad.
 
 ## Quick capture
 
-- 
+-
 
 ## Open tasks
 
@@ -327,8 +410,7 @@ in the Bases below; this note is just a landing pad.
 ![[activity.base]]
 EOF
 
-# Bases file: every open/doing task across the agent folders.
-seed "$VAULT/tasks.base" <<'EOF'
+seed "$WORK_VAULT_ABS/tasks.base" <<'EOF'
 filters:
   and:
     - file.ext == "md"
@@ -340,16 +422,13 @@ views:
     order:
       - file.name
       - status
-      - owner
-      - from
       - created
     sort:
       - property: created
         direction: DESC
 EOF
 
-# Bases file: everything the agents have touched, newest first.
-seed "$VAULT/activity.base" <<'EOF'
+seed "$WORK_VAULT_ABS/activity.base" <<'EOF'
 filters:
   and:
     - file.ext == "md"
@@ -361,18 +440,15 @@ views:
       - file.name
       - type
       - status
-      - owner
       - created
     sort:
       - property: created
         direction: DESC
 EOF
 
-# Seed the home vault with a simple dashboard (no cross-references).
-if [ "$ENABLE_HOME" = "1" ]; then
-	HVAULT="$ROOT/$HOME_VAULT"
-	mkdir -p "$HVAULT"
-	seed "$HVAULT/000-Dashboard.md" <<EOF
+mkdir -p "$HOME_VAULT_ABS/reminders"
+
+seed "$HOME_VAULT_ABS/000-Dashboard.md" <<EOF
 ---
 type: note
 status: done
@@ -382,19 +458,20 @@ created: 2025-01-01
 tags: [dashboard]
 ---
 
-# Dashboard
+# Home Dashboard
 
 Quick capture and a window into recent notes.
 
 ## Quick capture
 
-- 
+-
 
 ## Recent notes
 
 ![[notes.base]]
 EOF
-	seed "$HVAULT/notes.base" <<'EOF'
+
+seed "$HOME_VAULT_ABS/notes.base" <<'EOF'
 filters:
   and:
     - file.ext == "md"
@@ -410,76 +487,88 @@ views:
       - property: created
         direction: DESC
 EOF
-fi
 
-# --- 3b. telegram (optional) ------------------------------------------------
+# --- 7. telegram ------------------------------------------------------------
 # Write a bot token into a profile's .env. hermes reads it from there and
-# connects the bot automatically when that profile's gateway runs.
+# connects the bot when that profile's gateway runs. Every other line in that
+# file is preserved, and a profile with no new token is left completely alone -
+# an already-authorized bot keeps working.
 echo
+echo "== telegram =="
 set_tg_token() { # set_tg_token <profile> <token>
 	local penv="$HOME/.hermes/profiles/$1/.env"
 	touch "$penv"
+	if [ "$(getenv_file "$penv" TELEGRAM_BOT_TOKEN)" = "$2" ]; then
+		echo "  $1: token already current, left untouched"
+		return
+	fi
 	grep -v '^TELEGRAM_BOT_TOKEN=' "$penv" > "$penv.tmp" 2>/dev/null || true
 	echo "TELEGRAM_BOT_TOKEN=$2" >> "$penv.tmp"
 	mv "$penv.tmp" "$penv"
-	echo "  bot token set on profile '$1'; it connects when that gateway runs"
+	echo "  $1: bot token set; it connects when that gateway runs"
 }
-if [ -n "$TG_TOKEN" ]; then
-	echo "== telegram =="
-	set_tg_token "$PRIMARY_TELEGRAM_AGENT" "$TG_TOKEN"
+if [ -n "$WORK_TG_TOKEN" ]; then
+	set_tg_token "$WORK_NAME" "$WORK_TG_TOKEN"
 else
-	echo "== telegram: skipped (no TELEGRAM_BOT_TOKEN in env or $ROOT/.env) =="
+	echo "  $WORK_NAME: no token in .env; existing binding (if any) left untouched"
 fi
-if [ "$ENABLE_HOME" = "1" ]; then
-	if [ -n "$HOME_TG_TOKEN" ]; then
-		set_tg_token "$HOME_NAME" "$HOME_TG_TOKEN"
-	else
-		echo "  $HOME_NAME: no HOME_TELEGRAM_BOT_TOKEN set; its bot stays disconnected until you add one"
-	fi
+if [ -n "$HOME_TG_TOKEN" ]; then
+	set_tg_token "$HOME_NAME" "$HOME_TG_TOKEN"
+else
+	echo "  $HOME_NAME: no HOME_TELEGRAM_BOT_TOKEN in .env; existing binding (if any) left untouched"
 fi
 
-# --- 4. install per-profile gateways ----------------------------------------
+# --- 8. gateways ------------------------------------------------------------
 # Each gateway needs its own port; two cannot share one. Fully non-interactive
-# via flags (no prompts, so it cannot hang). If your hermes build does not honor
-# PORT for the installed service, the status check below shows what actually
-# bound, and you can set distinct ports per profile another way.
+# via flags, so it cannot hang.
 if [ "$INSTALL_GATEWAYS" = "1" ]; then
 	echo
-	echo "== install gateways =="
-	PORT="$ASSISTANT_PORT"  "$ASSISTANT_NAME"  gateway install --force --start-now --start-on-login </dev/null >/dev/null 2>&1 || true
-	PORT="$ENGINEER_PORT"   "$ENGINEER_NAME"   gateway install --force --start-now --start-on-login </dev/null >/dev/null 2>&1 || true
-	PORT="$RESEARCHER_PORT" "$RESEARCHER_NAME" gateway install --force --start-now --start-on-login </dev/null >/dev/null 2>&1 || true
-	echo "  requested $ASSISTANT_NAME:$ASSISTANT_PORT $ENGINEER_NAME:$ENGINEER_PORT $RESEARCHER_NAME:$RESEARCHER_PORT"
-	if [ "$ENABLE_HOME" = "1" ]; then
-		PORT="$HOME_PORT" "$HOME_NAME" gateway install --force --start-now --start-on-login </dev/null >/dev/null 2>&1 || true
-		echo "  requested $HOME_NAME:$HOME_PORT"
+	echo "== gateways =="
+	PORT="$WORK_PORT" "$WORK_NAME" gateway install --force --start-now --start-on-login </dev/null >/dev/null 2>&1 || true
+	PORT="$HOME_PORT" "$HOME_NAME" gateway install --force --start-now --start-on-login </dev/null >/dev/null 2>&1 || true
+	echo "  requested $WORK_NAME:$WORK_PORT $HOME_NAME:$HOME_PORT"
+fi
+
+# --- 9. status --------------------------------------------------------------
+echo
+echo "== status =="
+name_re="$(echo "$AGENTS default" | tr ' ' '|')"
+hermes profile list 2>/dev/null | grep -E "Profile|$name_re" || true
+if [ "$INSTALL_GATEWAYS" = "1" ]; then
+	port_re="$WORK_PORT|$HOME_PORT"
+	echo "listening gateway ports:"
+	if command -v ss >/dev/null 2>&1; then
+		ss -ltnp 2>/dev/null | grep -E ":($port_re)\b" || echo "  (none bound - check: $WORK_NAME gateway status)"
+	elif command -v lsof >/dev/null 2>&1; then
+		lsof -iTCP -sTCP:LISTEN -P 2>/dev/null | grep -E ":($port_re)\b" || echo "  (none bound - check: $WORK_NAME gateway status)"
 	fi
 fi
 
-# --- 5. status --------------------------------------------------------------
+# Ghiath used to run a three-agent team. If those profiles are still here they
+# are inert - nothing routes to them - but they still hold old sessions, so
+# removing them is left as a deliberate manual step.
 echo
-echo "== status =="
-# Build a regex of all configured profile names for the listing grep.
-name_re="$(echo "$ALL_AGENTS default" | tr ' ' '|')"
-hermes profile list 2>/dev/null | grep -E "Profile|$name_re" || true
-if [ "$INSTALL_GATEWAYS" = "1" ]; then
-	port_re="$(echo "$PRIMARY_PORTS" | tr ' ' '|')"
-	[ "$ENABLE_HOME" = "1" ] && port_re="$port_re|$HOME_PORT"
-	echo "listening gateway ports:"
-	if command -v ss >/dev/null 2>&1; then
-		ss -ltnp 2>/dev/null | grep -E ":($port_re)\b" || echo "  (none bound - check: $ASSISTANT_NAME gateway status)"
-	elif command -v lsof >/dev/null 2>&1; then
-		lsof -iTCP -sTCP:LISTEN -P 2>/dev/null | grep -E ":($port_re)\b" || echo "  (none bound - check: $ASSISTANT_NAME gateway status)"
-	fi
+legacy=""
+for old in assistant engineer researcher ippang kuli pakprof; do
+	case " $AGENTS " in *" $old "*) continue ;; esac
+	hermes profile show "$old" >/dev/null 2>&1 && legacy="$legacy $old"
+done
+if [ -n "$legacy" ]; then
+	echo "NOTE: retired profiles still present:$legacy"
+	echo "  They are unused now. Nothing here touches them. To remove one yourself:"
+	for old in $legacy; do
+		echo "    $old gateway uninstall && hermes profile delete -y $old"
+	done
 fi
 
 echo
 echo "done."
-[ -z "$VKEY" ] && echo "NOTE: no virtual key set. Run ./scripts/keirouter-connect.sh <key> once you mint one in KeiRouter."
-echo "Verify a model actually responds:  $ASSISTANT_NAME -z \"hi\""
-echo "If that 401s, the model slug or KeiRouter provider key is the issue, not the wiring."
-if [ -n "$TG_TOKEN" ]; then
-	echo "Telegram: open your bot in Telegram and send it a message; '$PRIMARY_TELEGRAM_AGENT' answers."
-	echo "  Lock it down: message the bot once, then set platforms.telegram.allowed_chats"
-	echo "  in ~/.hermes/profiles/$PRIMARY_TELEGRAM_AGENT/config.yaml to your own chat id."
+[ -z "$VKEY" ] && echo "NOTE: no virtual key passed; existing keys were kept. Set one with ./scripts/keirouter-connect.sh <key>."
+echo "Verify a model responds:  $WORK_NAME -z \"hi\""
+echo "If that 401s, the model slug or the KeiRouter provider key is the issue, not the wiring."
+if [ -n "$WORK_TG_TOKEN" ] || [ -n "$HOME_TG_TOKEN" ]; then
+	echo "Telegram: message each bot to test."
+	echo "  Lock them down: set platforms.telegram.allowed_chats in"
+	echo "  ~/.hermes/profiles/<agent>/config.yaml (work: your chat id only;"
+	echo "  home: yours and your wife's)."
 fi

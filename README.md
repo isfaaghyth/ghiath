@@ -1,249 +1,256 @@
 # Ghiath
 
-A self-hosted, local-first agentic ecosystem: a small team of AI agents backed by
-a long-term memory vault, an automation router, a semantic search layer, and
-cross-device sync, all running on your own hardware.
+> **Read this first.**
+> Ghiath is built for light, non-extensive personal use, and nothing more.
+> It is two small assistants, a notes vault, and enough glue to reach them from Telegram.
+> There is no loop engineering here: no planner, no task graph, no retry or escalation logic, no orchestration across agents.
+> If you push heavy or long-running agentic work through it, it will disappoint you, and that is by design rather than by neglect.
+>
+> **Want the serious version?**
+> If you need an advanced technical agentic workflow with real loop engineering, use [**ghiath-loop**](https://github.com/isfaaghyth/ghiath-loop) instead.
+> That is where the extensive, production-shaped work lives.
+
+A self-hosted, local-first pair of AI assistants backed by a long-term memory vault, a semantic search layer, and cross-device sync, all running on your own hardware.
 
 ![Self-hosted](https://img.shields.io/badge/self--hosted-yes-success)
 ![Local-first](https://img.shields.io/badge/local--first-brightgreen)
 ![Docker Compose](https://img.shields.io/badge/Docker%20Compose-ready-2496ED?logo=docker&logoColor=white)
 
-Everything runs locally first. Deploying to a VPS behind your own domain is an
-opt-in step, not a requirement.
+Everything runs locally first.
+Deploying to a VPS behind your own domain is an opt-in step, not a requirement.
 
 ## Contents
 
-- [Overview](#overview)
+- [The two agents](#the-two-agents)
 - [Architecture](#architecture)
-- [How a request flows](#how-a-request-flows)
 - [Repository layout](#repository-layout)
 - [Prerequisites](#prerequisites)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
-  - [CouchDB and Obsidian LiveSync](#couchdb-and-obsidian-livesync)
-  - [Hermes profiles](#hermes-profiles)
+  - [Agents](#agents)
+  - [The confirmation gate](#the-confirmation-gate)
+  - [Telegram bots](#telegram-bots)
   - [Routing through KeiRouter](#routing-through-keirouter)
-  - [Telegram bot](#telegram-bot)
-- [n8n workflows](#n8n-workflows)
-- [Reminders (alarms + calendar)](#reminders-alarms--calendar)
+  - [CouchDB and Obsidian LiveSync](#couchdb-and-obsidian-livesync)
+- [Reminders](#reminders)
+- [Updating without losing state](#updating-without-losing-state)
+- [Private data and skills](#private-data-and-skills)
 - [Deployment](#deployment)
 
-## Overview
+## The two agents
 
-Ghiath is assembled from a few cooperating, self-hostable pieces:
+Ghiath is exactly two agents, one per side of life.
+They are fully isolated from each other: separate hermes profiles, separate vaults, separate Qdrant collections, separate Telegram bots.
+There is no router, no lead agent, and no handoffs between them.
 
-| Component | Role |
-| --- | --- |
-| [hermes-agent](https://hermes-agent.nousresearch.com) | The agent runtime. Each agent is an isolated profile with its own config, keys, memory, and gateway. |
-| [Obsidian](https://obsidian.md) | The cognitive core and long-term memory. The vault is a folder of Markdown files. |
-| [n8n](https://n8n.io) | The automation and routing nervous system. Inbound messages arrive here and it decides which agent responds. |
-| [Qdrant](https://qdrant.tech) | A semantic search layer over the vault, kept in sync by a small indexer sidecar. |
-| CouchDB + [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) | Sync the vault across your devices and the VPS, without a paid Obsidian Sync subscription. |
-| KeiRouter | A self-hosted LLM gateway for cost tracking and key management. |
-| [Caddy](https://caddyserver.com) | Reverse proxy with automatic HTTPS. Used only on the VPS. |
+| Agent | Who talks to it | Model | Vault |
+| --- | --- | --- | --- |
+| **work** | You alone | GLM 5.1 | `vault-work/` |
+| **home** | You and your partner | DeepSeek v4 Flash | `vault-home/` |
 
-The three agents:
+The **work** agent is the technical one.
+It does the whole job itself: thinking, researching, planning, and executing.
+Before it executes anything, it stops and asks you to confirm over Telegram.
+See [the confirmation gate](#the-confirmation-gate).
 
-- `assistant` - a lightweight everyday assistant. Owns `vault/scratchpads/`.
-- `engineer` - a software engineer buddy that plans with a strong model and executes
-  with a fast one. Owns `vault/projects/`.
-- `researcher` - a deep researcher. Owns `vault/memory/`.
+The **home** agent is the household one.
+Reminders, lists, plans, appointments, quick questions, journaling.
+It is shared, so it never assumes which person it is talking to, and it cannot reach the work vault at all.
 
-Agent names, models, vault folder names, and ports are configurable: copy
-`agents.conf.example` to `agents.conf` and edit it. The shipped defaults are the
-neutral names above.
+Names, models, ports, and vault folders are configuration.
+Copy `agents.conf.example` to `agents.conf` and edit it; the shipped defaults are the neutral names above.
 
-There is no central lead agent; n8n plays the router. Agents hand off to each
-other by writing a note into the target agent's folder.
-
-> hermes-agent does not run inside Docker here. It runs on the host via
-> `hermes gateway start` per profile. Dockerizing it is intentionally out of
-> scope for now.
+Ghiath used to run a team of three role agents behind an n8n router.
+That was more machinery than a personal assistant needs, so it is gone.
 
 ## Architecture
 
 ```
-                inbound (Telegram / Discord / web / cron)
-                                 |
-                                 v
-                           +-----------+
-                           |    n8n    |   router + vault-watch workflows
-                           +-----+-----+
-                                 | OpenAI-compatible call
-                                 v
-            +--------------------+---------------------+
-            |         hermes agents (on the host)      |
-            |     assistant     engineer    researcher   |
-            +----+----------------+----------------+----+
-                 |   read / write owned vault folders   |
-                 v                                       v
-             +-------------------------------------------+
-             |          Obsidian vault (Markdown)         |
-             |   scratchpads/    projects/    memory/     |
-             +--------+----------------------+-----------+
-              embeds  |                       |  replicates
-                      v                       v
-                +-----------+          +--------------+
-                |  Qdrant   |          |   CouchDB    |--> phone / desktop / VPS
-                | semantic  |          |  (LiveSync)  |
-                +-----------+          +--------------+
+   Telegram (work bot)                    Telegram (home bot)
+            |                                      |
+            v                                      v
+   +------------------+                   +------------------+
+   |   work agent     |                   |   home agent     |
+   |   (hermes)       |                   |   (hermes)       |
+   +--------+---------+                   +---------+--------+
+            |                                       |
+            v                                       v
+   +------------------+                   +------------------+
+   |   vault-work/    |                   |   vault-home/    |
+   |   (Markdown)     |                   |   (Markdown)     |
+   +--+------------+--+                   +--+------------+--+
+      |            |                         |            |
+ embeds|           |replicates         embeds|            |replicates
+      v            v                         v            v
+ +---------+  +----------+             +---------+  +----------+
+ | Qdrant  |  | CouchDB  |             | Qdrant  |  | CouchDB  |
+ |vault_work| |'ghiath'  |             |vault_home| |'ghiath-  |
+ +---------+  +----------+             +---------+  |  home'   |
+                   |                                +----------+
+                   v                                     |
+            your devices                                 v
+                                              your + partner's devices
 
   Agent LLM calls  ->  KeiRouter (gateway, holds the provider keys)
-  Public HTTPS     ->  Caddy (per-subdomain reverse proxy, on the VPS only)
+  Reminder alarms  ->  hermes cron -> ntfy -> phone
+  Public HTTPS     ->  Caddy (per-subdomain reverse proxy, VPS only)
 ```
 
-## How a request flows
+The two columns never meet.
+Separate Qdrant collections mean semantic search cannot cross, and separate CouchDB databases mean a household device syncing the home vault cannot see the work one.
 
-1. A message arrives (Telegram, Discord, a web form, or a cron trigger) and hits
-   **n8n**.
-2. n8n inspects it and routes to the right agent by calling that agent's hermes
-   gateway over its OpenAI-compatible API (`POST /v1/chat/completions`, port 8642).
-3. The chosen agent reads and writes its owned vault folder. To hand off, it
-   writes a note into another agent's folder; an n8n vault-watch workflow notices
-   the new note and triggers that agent.
-4. The **qdrant-indexer** sidecar polls the vault, chunks changed Markdown, embeds
-   it locally, and upserts it into **Qdrant**, so everything written becomes
-   semantically searchable.
-5. Results are logged back into the vault, and the Obsidian dashboard
-   (`000-Dashboard.md`) surfaces open tasks and pipeline activity.
-6. **CouchDB + LiveSync** replicate the whole vault to every device.
+Everything scheduled runs on **hermes's own cron**, not on an external automation engine.
+n8n is still in `docker-compose.yml` as an optional add-on, but nothing depends on it and it does not start by default.
 
 ## Repository layout
 
 ```
 ghiath/
 - .env.example
+- agents.conf.example   the two agents: names, models, ports, vaults
 - docker-compose.yml
-- Makefile               make bootstrap / up / deploy / test / logs
+- Makefile              make bootstrap / up / agents / test / logs
 - README.md
-- DEPLOY.md              VPS deployment and hardening checklist
-- AGENT.md               working rules for any AI agent in this repo
-- scripts/               bootstrap, couch-init, smoke-test, keirouter-connect
-- caddy/                 Caddyfile for the VPS reverse proxy
-- n8n-workflows/         importable router, vault-watch, reminder workflows (tracked)
-- skills/                custom hermes skills seeded into agents (e.g. reminders)
-- ntfy/                  ntfy push server config (server.yml; data gitignored)
-- qdrant-indexer/        vault watcher sidecar (Dockerfile + indexer.py)
-- vault/        the Obsidian vault (gitignored)
-    - 000-Dashboard.md
-    - scratchpads/       assistant's folder
-    - projects/          engineer's folder
-    - memory/            researcher's folder
+- DEPLOY.md             VPS deployment and hardening checklist
+- AGENT.md              working rules for any AI agent in this repo
+- REMINDERS.md          the reminder/alarm runbook
+- scripts/              bootstrap, hermes provisioning, sync-env, smoke-test
+    - hermes-cron/      tick scripts run by `hermes cron` (reminders)
+- caddy/                Caddyfile for the VPS reverse proxy
+- skills/               custom hermes skills seeded into both agents
+- ntfy/                 ntfy push server config (server.yml; data gitignored)
+- qdrant-indexer/       vault watcher sidecar (Dockerfile + indexer.py)
+- vault-work/           the work vault (gitignored)
+- vault-home/           the home vault (gitignored)
 - n8n/ keirouter/ couchdb/ qdrant/    runtime data (gitignored)
 ```
 
-Hermes agent state lives at `~/.hermes/profiles/<name>/`, per machine, and is
-deliberately not part of this repo.
+Every folder matching `vault*/` is gitignored, so no note is ever pushed.
+
+Hermes agent state lives at `~/.hermes/profiles/<name>/`, per machine, and is deliberately not part of this repo.
 
 ## Prerequisites
 
 - Docker and Docker Compose.
 - `openssl` for generating secrets.
-- Obsidian on desktop, and optionally mobile, for the vault and LiveSync.
+- Obsidian on desktop, and optionally mobile, for the vaults and LiveSync.
 - macOS or Linux for the hermes host install.
-- An Anthropic and/or OpenRouter API key (added to KeiRouter, not committed).
+- An OpenRouter and/or Anthropic API key (added to KeiRouter, not committed).
 
 ## Quick start
 
 ```bash
-cp .env.example .env      # optional: bootstrap generates secrets for you
-make bootstrap            # generate secrets, start the stack, initialize CouchDB
-make test                 # smoke-test every service
+cp agents.conf.example agents.conf   # name your agents, pick your models
+make bootstrap                       # generate secrets, start the stack, init CouchDB
+make test                            # smoke-test every service
 ```
 
-`make bootstrap` starts couchdb, qdrant, qdrant-indexer, keirouter, and n8n.
-Caddy is not started locally (it is production only).
+`make bootstrap` starts couchdb, livesync-bridge, qdrant, both indexers, keirouter, and ntfy.
+Caddy and n8n are not started (production and opt-in, respectively).
 
 Service endpoints once up:
 
 | Service | URL |
 | --- | --- |
-| n8n | http://localhost:5678 |
-| Qdrant dashboard | http://localhost:6333/dashboard |
 | KeiRouter dashboard | http://localhost:20180 (default password `keirouter`, change it) |
+| Qdrant dashboard | http://localhost:6333/dashboard |
 | CouchDB | http://localhost:5984/_utils |
+| ntfy | http://localhost:8080 |
 
-Then create the n8n owner account, change the KeiRouter password, and set up the
-hermes profiles as described below.
+Then provision the two agents on the host:
 
-Common tasks are in the Makefile - run `make help` for the full list.
+```bash
+./scripts/hermes.sh <keirouter-virtual-key>     # or: make agents K=<key>
+```
+
+Common tasks are in the Makefile; run `make help` for the full list.
 
 ## Configuration
 
-### CouchDB and Obsidian LiveSync
+### Agents
 
-`make bootstrap` already applies the CouchDB configuration LiveSync needs (CORS,
-valid-user auth, larger request size). To re-apply it manually:
+`agents.conf` is the single source of truth for both agents:
 
 ```bash
-make couch-init
+WORK_NAME="work"
+WORK_MODEL="z-ai/glm-5.1"
+WORK_PORT="8642"
+WORK_VAULT="vault-work"
+WORK_COLLECTION="vault_work"
+WORK_CONFIRM_GATE="1"
+
+HOME_NAME="home"
+HOME_MODEL="deepseek/deepseek-v4-flash"
+HOME_PORT="8645"
+HOME_VAULT="vault-home"
+HOME_COLLECTION="vault_home"
 ```
 
-Then install the Obsidian "Self-hosted LiveSync" community plugin, open
-`vault/` as a vault, and point the plugin at CouchDB:
+`scripts/hermes.sh` reads it to provision the hermes profiles, and `scripts/sync-env.sh` projects the vault and collection names into `.env`, where Docker Compose can read them.
+After any change to `agents.conf`:
 
-- URI: `http://localhost:5984` locally, or `https://couch.example.com` on the VPS
-- Username and password: `COUCHDB_USER` / `COUCHDB_PASSWORD` from `.env`
-- Database name: any name, the same one on every device
+```bash
+./scripts/sync-env.sh --write   # or: make sync-env
+docker compose up -d
+./scripts/hermes.sh             # or: make agents
+```
 
-Repeat on mobile once the VPS is reachable over HTTPS.
-
-### Hermes profiles
-
-hermes runs on the host, not in Docker. After installing it once:
+hermes runs on the host, not in Docker. Install it once:
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-the fastest path is the setup script, which resets and reprovisions all three
-profiles (models, KeiRouter wiring, roles, Telegram, and gateways) idempotently:
+`scripts/hermes.sh` is **idempotent and non-destructive**.
+It creates a profile only if it is missing and otherwise reconfigures it in place, so sessions, memories, and Telegram bindings survive every run.
+See [updating without losing state](#updating-without-losing-state).
 
-```bash
-./scripts/hermes.sh <keirouter-virtual-key>
-```
+Model slugs drift.
+After adding provider keys to KeiRouter, confirm the exact slug with `hermes model --refresh` and adjust `agents.conf` if one does not resolve.
 
-The script sources `agents.conf` for the agent names, models, vault folder
-names, Qdrant collection names, and ports. Copy `agents.conf.example` to
-`agents.conf` and edit it to customize any of these (inline env vars still
-override); the shipped defaults are the neutral names below.
+### The confirmation gate
 
-To do it by hand instead, the equivalent per-profile commands are:
+The work agent will not execute a technical task until you say so.
+This is written into its `SOUL.md` by `scripts/hermes.sh`, and it works like this:
 
-```bash
-hermes profile create assistant
-assistant config set model.default deepseek/deepseek-v2-flash
+1. **Plan.** It replies with what it understood, the exact steps it intends to take, and which files or services each step touches.
+2. **Ask.** It ends with `Confirm to proceed? (reply "go")` and stops.
+3. **Wait.** It does nothing until you answer. Anything that is not a clear go-ahead counts as "no".
+4. **Execute.** On confirmation it carries out that plan, and only that plan. A step it did not list sends it back to step 1.
 
-hermes profile create engineer
-engineer config set model.default anthropic/claude-opus-4-8      # orchestrator, plans
-engineer config set subagents.model anthropic/claude-sonnet-5    # subagents, execute
+"Technical" means anything that changes state or runs code: editing files, running commands, installing packages, writing git operations, deploying, restarting services, mutating an API, changing configuration.
+Reading, searching, summarizing, explaining, and planning are not gated, so questions still get answered immediately.
 
-hermes profile create researcher
-researcher config set model.default z-ai/glm-4.6
-```
+One confirmation covers one plan.
+It never carries over to the next request and never becomes a standing permission.
 
-Notes:
+Set `WORK_CONFIRM_GATE="0"` in `agents.conf` and re-run `./scripts/hermes.sh` to turn the gate off.
+The home agent has no gate; it does not do technical work.
 
-- Each profile becomes its own alias command (`assistant`, `engineer`,
-  `researcher`), so you configure it as `assistant config set ...`. There is no
-  `-p` global flag.
-- There is no `model.planning` key. The engineer's "strong model plans, fast
-  model executes" split is done with the orchestrator (`model.default`) plus a
-  subagent model override (`subagents.model`).
-- Model slugs drift. After adding keys, confirm exact slugs from the live catalog
-  with `hermes model --refresh` and adjust if one does not resolve.
+### Telegram bots
 
-Start a profile's gateway when you want it reachable by n8n (default port 8642):
+hermes has native Telegram support, so an agent is reachable from a bot with no extra service.
+Each agent gets its **own** bot. That separation is the security boundary: the household bot has no path to the work vault.
 
-```bash
-assistant gateway start
-```
+1. Create two bots with [@BotFather](https://t.me/BotFather) and copy both tokens.
+2. Put them in `.env`:
+
+   ```
+   WORK_TELEGRAM_BOT_TOKEN=123456:ABC-your-work-token
+   HOME_TELEGRAM_BOT_TOKEN=789012:XYZ-your-home-token
+   ```
+
+3. Run `./scripts/hermes.sh`.
+   It writes each token into the matching profile, and hermes connects the bot when that profile's gateway runs.
+
+Lock them down after the first message.
+Set `platforms.telegram.allowed_chats` in `~/.hermes/profiles/<agent>/config.yaml`: your chat id only for the work bot, yours and your partner's for the home bot.
+Until you do, anyone who finds the bot can talk to it.
 
 ### Routing through KeiRouter
 
-KeiRouter is the single place that holds your upstream provider keys, so the
-agents never carry Anthropic or OpenRouter keys directly. Each profile is already
-pointed at KeiRouter as a custom OpenAI-compatible provider:
+KeiRouter is the single place that holds your upstream provider keys, so the agents never carry them directly.
+Both profiles are pointed at it as a custom OpenAI-compatible provider:
 
 ```
 model.provider = custom
@@ -253,199 +260,222 @@ model.base_url = http://localhost:20180/v1
 To finish the connection:
 
 1. Open the KeiRouter dashboard, log in, and change the default password.
-2. Add your upstream provider key(s), and confirm the model slugs KeiRouter
-   exposes match each profile's `model.default`.
-3. Mint a client API key (the `kr_...` value clients authenticate with; distinct
-   from the `.env` master key). The reliable way is the CLI:
+2. Add your upstream provider key(s), and confirm the model slugs KeiRouter exposes match `WORK_MODEL` and `HOME_MODEL`.
+3. Mint a client API key (the `kr_...` value clients authenticate with; distinct from the `.env` master key):
 
    ```bash
    docker compose exec keirouter keirouter bootstrap -key-name ghiath-agents
    # prints a kr_... key once - copy it
    ```
 
-   It also appears in the dashboard's key list afterward.
-4. Push it into all three profiles:
+4. Push it into both profiles:
 
    ```bash
    ./scripts/keirouter-connect.sh <kr_key>
    ```
 
-5. Test one: `assistant -z "say hello in three words"`.
+5. Test: `work -z "say hello in three words"`.
 
-Keys live only in KeiRouter, so you rotate them in one place and get per-agent
-spend tracking and a semantic cache. Leave `ANTHROPIC_API_KEY` /
-`OPENROUTER_API_KEY` blank in `.env` unless you deliberately bypass KeiRouter.
+Keys live only in KeiRouter, so you rotate them in one place and get per-agent spend tracking.
+Leave `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` blank in `.env` unless you deliberately bypass KeiRouter.
 
-### Telegram bot
+### CouchDB and Obsidian LiveSync
 
-hermes has native Telegram support, so an agent can be reached from a Telegram
-bot with no extra service. One bot maps to one front-door agent (`assistant` by
-default); it answers directly and hands off to the engineer or researcher through the vault.
+`make bootstrap` applies the CouchDB configuration LiveSync needs (CORS, valid-user auth, larger request size).
+To re-apply it manually: `make couch-init`.
 
-1. In Telegram, message [@BotFather](https://t.me/BotFather), run `/newbot`, and
-   copy the token it gives you.
-2. Put it in `.env`:
+The `livesync-bridge` service is what connects the vault **on disk** (what the agents read and write) to CouchDB (what your devices sync).
+Its config is generated by `scripts/sync-env.sh` into a gitignored file, because it holds the CouchDB password.
 
-   ```
-   TELEGRAM_BOT_TOKEN=123456:ABC-your-token
-   ```
+Install the Obsidian "Self-hosted LiveSync" community plugin, open the vault folder, and point the plugin at CouchDB:
 
-3. Run the setup script (also covers cleanup and profile config):
+- URI: `http://localhost:5984` locally, or `https://couch.example.com` on the VPS
+- Username and password: `COUCHDB_USER` / `COUCHDB_PASSWORD` from `.env`
+- Database name: `ghiath` for the work vault, `ghiath-home` for the home one (`LIVESYNC_DB` and `LIVESYNC_HOME_DB` in `.env`)
 
-   ```bash
-   ./scripts/hermes.sh <keirouter-virtual-key>
-   ```
+Keep those database names stable.
+Renaming one orphans everything already synced under the old name.
 
-   It writes the token into the front-door profile's `.env` and, when that
-   profile's gateway runs, hermes connects the bot. Message your bot to test.
+Your partner's devices only ever get the `ghiath-home` database, which is what keeps the two vaults separate on their end too.
 
-Lock it down after the first message: set `platforms.telegram.allowed_chats` in
-`~/.hermes/profiles/assistant/config.yaml` to your own chat id, so only you can use
-the bot. Change the front-door agent by setting `PRIMARY_TELEGRAM_AGENT` in
-`agents.conf` (for example `PRIMARY_TELEGRAM_AGENT=engineer`).
+## Reminders
 
-### A second, isolated assistant (optional)
+Ask either agent over Telegram to remind you of something.
+The `reminders` skill (in `skills/`, seeded into both agents) picks a channel:
 
-If you want a second, isolated everyday assistant without touching your
-technical vault, enable `home`: a Telegram-only helper for everyday tasks
-(reminders, lists, journaling). It is fully separate - its own vault
-(`vault-home/`), its own Qdrant collection (`vault_home`), and no
-handoffs to or from your agents.
+- **Alarm (ntfy)** - an urgent push that breaks through Do Not Disturb, repeats every minute, and keeps nagging until you tap **Acknowledge**. For things you must not miss.
+- **Calendar (Google Calendar)** - a normal event with a reminder, created via the built-in `google-workspace` skill. For appointments and soft nudges.
 
-1. Create a second bot with [@BotFather](https://t.me/BotFather) and put its
-   token in `.env` as `HOME_TELEGRAM_BOT_TOKEN`.
-2. Start its indexer sidecar (own compose profile):
+If your request does not name a channel, the agent asks which you want.
 
-   ```bash
-   docker compose --profile home up -d
-   ```
+The alarm path is entirely self-hosted and involves no LLM once the note is written:
 
-3. Provision its profile (adds `home`, seeds `vault-home/`, connects
-   its bot):
+```
+you (Telegram) -> agent runs the "reminders" skill
+   |- alarm    -> writes <vault>/reminders/<id>.md (status: scheduled)
+   |               -> hermes cron runs reminder-tick.py every minute, fires ntfy
+   |                  when due, re-nags until acknowledged, pings Telegram once
+   |- calendar -> google-workspace skill creates the event (Google fires it)
+```
 
-   ```bash
-   ENABLE_HOME=1 ./scripts/hermes.sh <keirouter-virtual-key>
-   ```
+`reminder-tick.py` scans **both** vaults, so either agent can set an alarm.
 
-It opens `vault-home/` as a separate Obsidian vault (and a separate
-LiveSync database name), so it never mixes with yours.
+### The two ntfy topics
 
-## n8n workflows
+Each agent publishes to its own predefined topic. They are deliberately separate:
 
-Two starting workflows live in `n8n-workflows/` and are imported automatically:
+| Topic | Set by | Rings on | `.env` variable |
+| --- | --- | --- | --- |
+| `ghiath-work-alarm` | the work agent | your phone only | `NTFY_TOPIC` |
+| `ghiath-home-alarm` | the home agent | both phones | `NTFY_HOME_TOPIC` |
 
-- **Router** (`router.json`): a `POST /webhook/ghiath` endpoint that inspects the
-  message, picks an agent (research keywords go to the researcher, build keywords to
-  the engineer, everything else to the assistant), calls that agent's gateway, and returns the
-  reply. The agent persists its own output into its vault folder. Routing is
-  config-driven via the optional n8n environment variable `GHIATH_ROUTES` (JSON),
-  falling back to the neutral defaults (assistant/engineer/researcher).
-- **Vault Watch** (`vault-watch.json`): watches `vault/` for new `.md`
-  files and triggers the agent that owns the folder the note landed in. This is
-  the handoff mechanism.
-- **Reminder Scheduler** (`reminder-scheduler.json`): polls `vault/reminders/`
-  every minute, fires an ntfy phone alarm when a reminder comes due, re-nags
-  until acknowledged, and sends one Telegram ping on first fire. See
-  [Reminders](#reminders-alarms--calendar).
-- **Reminder Ack** (`reminder-ack.json`): the webhook the alarm's Acknowledge
-  button calls; it stops the nagging. Activate it alongside the scheduler.
+Do not point both at one topic.
+Separate topics plus ntfy's per-topic access control are what keep work alarms off your partner's phone; a single shared topic would leak every work reminder to both devices.
 
-To re-import after editing:
+### Setting up ntfy on the phone
+
+ntfy runs **deny-all**, so nothing works until you create accounts. There are three, and they do different jobs:
 
 ```bash
-docker compose cp n8n-workflows/router.json n8n:/tmp/router.json
-docker compose exec n8n n8n import:workflow --input=/tmp/router.json
-```
-
-Before activating them, start each profile's gateway on its own port (two
-gateways cannot share one), connect the profiles to KeiRouter, then toggle each
-workflow Active in the editor:
-
-```bash
-assistant gateway start              # 8642
-PORT=8643 engineer gateway start
-PORT=8644 researcher gateway start
-```
-
-These are scaffolds, not finished automations. Verify the gateway URLs/ports and
-the routing rules against your setup, then extend them (Telegram/Discord
-triggers, richer routing, logging).
-
-## Reminders (alarms + calendar)
-
-Ask an agent over Telegram to remind you of something. The `reminders` skill
-(in `skills/`, seeded into each primary agent by `scripts/hermes.sh`) picks a
-channel:
-
-- **Alarm (ntfy)** — an urgent push to your Android phone that breaks through Do
-  Not Disturb, repeats every minute, and keeps nagging until you tap
-  **Acknowledge**. For things you must not miss.
-- **Calendar (Google Calendar)** — a normal event with a reminder, created via
-  the built-in `google-workspace` skill (which owns Google auth). For
-  appointments and soft nudges.
-
-If your request doesn't name a channel, the agent asks which you want.
-
-```
-you (Telegram) → assistant runs the "reminders" skill
-   ├─ alarm    → writes vault/reminders/<id>.md (status: scheduled)
-   │              → n8n Reminder Scheduler fires ntfy when due, re-nags until
-   │                acknowledged, one Telegram ping on first fire
-   └─ calendar → google-workspace skill creates the event (Google fires it)
-```
-
-The alarm path is self-hosted: the `ntfy` service (config in `ntfy/server.yml`)
-plus the two reminder workflows. ntfy runs **deny-all** — nobody can publish or
-read without credentials — so after first start you create a user (for the
-phone) and a publish token (for n8n):
-
-```bash
+# 1. The publisher. Its token is what reminder-tick.py authenticates with.
+#    Not used on any phone.
 docker compose exec ntfy ntfy user add --role=admin ghiath   # sets a password
 docker compose exec ntfy ntfy token add ghiath               # prints tk_...
+# put that tk_... value in .env as NTFY_TOKEN
+
+# 2. Your phone: access to both topics.
+docker compose exec ntfy ntfy user add isfa
+docker compose exec ntfy ntfy access isfa ghiath-work-alarm rw
+docker compose exec ntfy ntfy access isfa ghiath-home-alarm rw
+
+# 3. Your partner's phone: the household topic and nothing else.
+docker compose exec ntfy ntfy user add rumah
+docker compose exec ntfy ntfy access rumah ghiath-home-alarm rw
 ```
 
-Put the `tk_...` value in `.env` as `NTFY_TOKEN`, set `NTFY_BASE_URL` to your
-public ntfy subdomain, then recreate n8n. Install the **ntfy** Android app,
-point it at `NTFY_BASE_URL`, log in as `ghiath`, subscribe to `NTFY_TOPIC`
-(`ghiath-alarm` by default), and enable **Override Do Not Disturb** on that
-subscription — that is what makes it an alarm rather than a passive push.
+Check the result with `docker compose exec ntfy ntfy access`.
+The `rumah` account should show only `ghiath-home-alarm`.
 
-Full step-by-step (DNS, app config, importing/activating the workflows,
-optional calendar OAuth) is in **`REMINDERS.md`**.
+Then, on each phone:
 
-## Private data & skills
+1. Install **ntfy** from the Play Store or App Store.
+2. Open **Settings, Default server** and set it to your public URL, e.g. `https://ntfy.ghiath.id`. This must be the HTTPS domain, not the loopback address.
+3. Open **Settings, Manage users**, then **Add user**: the server URL, plus the username and password from above (`isfa` on your phone, `rumah` on your partner's).
+4. Subscribe to the topics that account is allowed to read:
+   - your phone: `ghiath-work-alarm` **and** `ghiath-home-alarm`
+   - your partner's phone: `ghiath-home-alarm` only
+5. On **each** subscription, open its settings and enable **"Override Do Not Disturb"**, then pick a loud sound. This is the step that turns a normal push into an alarm you cannot sleep through. It is per subscription, so it must be done for both on your phone.
 
-Some knowledge is personal or proprietary and must never land in this repo. The
-convention keeps two things machine-local:
+If a subscription shows an authentication error, that account has no `access` grant for that topic. Re-run the matching `ntfy access` command.
 
-- **The data** lives *outside* this repo entirely — clone it somewhere like
-  `~/private-data/<name>` on the host. (Do not drop it into `vault-work/`: that
-  folder is tracked, so it would be pushed.) Agents run on the host, so they can
-  read that path directly; `git pull` there to refresh it.
-- **The skill** that reads it lives in `skills-local/` (gitignored). `hermes.sh`
-  seeds `skills-local/` into every primary agent exactly like the shared
-  `skills/`, so a private skill is durable across re-provisions yet never
-  pushed. Write a `skills-local/<name>/SKILL.md` that tells the agent where the
-  files are and how to extract text from them (e.g. `pdftotext`, or python for
-  `.docx`), then re-run `scripts/hermes.sh` (or copy it into
-  `~/.hermes/profiles/<agent>/skills/custom/` by hand).
+Full step-by-step (DNS, registering the cron job, optional calendar OAuth) is in **[REMINDERS.md](REMINDERS.md)**.
 
-This mirrors how secrets are handled elsewhere: `.env`, `agents.conf`, and
-`livesync-bridge/config.json` are all gitignored while their `*.example`
-templates are tracked.
+## Updating without losing state
+
+Deploying an update must never cost you a Telegram login, a session, or a note.
+Three things guarantee that:
+
+- **`scripts/hermes.sh` never deletes a profile.**
+  It creates one only when missing and otherwise reconfigures in place, so `sessions/`, `memories/`, and the per-profile `.env` holding the Telegram token are all preserved.
+  The role text lives inside a marked block in `SOUL.md` that is replaced whole, so re-running updates the role without duplicating it.
+  The destructive path exists but is opt-in and interactive: `./scripts/hermes.sh --reset`.
+- **Vault seeding is additive.**
+  An existing file is never overwritten. `make agents` on a vault full of notes only ever adds the scaffolding that is missing.
+- **Every vault folder is gitignored** via the `vault*/` pattern, so a `git pull` cannot clobber your notes and a `git push` cannot leak them.
+
+The normal update, safe to run on a live box:
+
+```bash
+git pull
+make sync-env          # re-project agents.conf into .env
+docker compose up -d   # recreate containers; bind-mounted data is untouched
+make agents            # reconfigure the agents in place
+make test
+```
+
+`make reinstall` (`scripts/force-reinstall.sh`) offers heavier Docker-side resets.
+Even its most destructive level only touches Docker state; the host-side agent profiles and the vaults survive.
+
+### Migrating from the three-agent setup
+
+This is a one-time migration, needed only on a box that ran the older
+assistant/engineer/researcher version. The routine update above is enough afterwards.
+
+**`agents.conf` and `.env` are gitignored, so `git pull` does not migrate them.**
+`scripts/hermes.sh` and `scripts/sync-env.sh` both refuse to run against a stale
+`agents.conf` rather than silently provisioning new empty profiles, so a mistake
+here fails loudly instead of leaving your bot dark.
+
+```bash
+cd ~/ghiath
+git pull
+
+# 1. Rewrite agents.conf in the WORK_/HOME_ format. Reuse the EXISTING profile
+#    name for WORK_NAME: that is what preserves its sessions and Telegram
+#    binding. Reuse the existing folder names for the vaults.
+$EDITOR agents.conf
+
+# 2. Project it into .env and the LiveSync bridge config.
+make sync-env
+
+# 3. Add the second ntfy topic and, if you have not already, the two bot tokens.
+#    NTFY_TOPIC changes name in this version, so update it too.
+$EDITOR .env
+#   NTFY_TOPIC=ghiath-work-alarm
+#   NTFY_HOME_TOPIC=ghiath-home-alarm
+#   WORK_TELEGRAM_BOT_TOKEN=...     (or keep the old TELEGRAM_BOT_TOKEN name)
+#   HOME_TELEGRAM_BOT_TOKEN=...
+
+# 4. Recreate the stack. n8n is now an add-on and will not start; if it is
+#    currently running, stop it explicitly.
+docker compose --profile prod up -d
+docker compose --profile addon stop n8n     # only if it was running
+
+# 5. Reconfigure the agents in place and create the home agent.
+make agents K=<keirouter-key>
+
+# 6. The vault-tick cron job no longer exists; its script was removed.
+hermes cron list
+hermes cron delete ghiath-vault             # if it is listed
+
+# 7. Re-seed the reminder tick and confirm its job is still registered.
+make seed-cron
+hermes cron list
+
+make test
+```
+
+Then finish on the phone side, because the work topic was renamed and the
+household topic is new:
+
+- Create the per-phone ntfy accounts and grants, and re-subscribe both phones to the topics they are allowed to read. See [setting up ntfy on the phone](#setting-up-ntfy-on-the-phone).
+- Message the home bot once, then add both chat ids to `platforms.telegram.allowed_chats` in the home profile's `config.yaml`.
+
+Two things are intentionally left alone, because deleting them is not reversible
+and neither is in the way:
+
+- **The retired profiles.** `hermes.sh` prints the exact command if it finds any. Remove them only once you are satisfied the new setup works:
+  `<name> gateway uninstall && hermes profile delete -y <name>`
+- **The old n8n workflows and their data.** If you had imported the router, vault-watch, vault-notify or reminder workflows, deactivate them in the n8n UI so nothing fires twice.
+
+## Private data and skills
+
+Some knowledge is personal or proprietary and must never land in this repo.
+The convention keeps two things machine-local:
+
+- **The data** lives outside this repo entirely: clone it somewhere like `~/private-data/<name>` on the host.
+  Agents run on the host, so they can read that path directly.
+- **The skill** that reads it lives in `skills-local/` (gitignored).
+  `hermes.sh` seeds `skills-local/` into both agents exactly like the shared `skills/`, so a private skill is durable across re-provisions yet never pushed.
+
+This mirrors how secrets are handled elsewhere: `.env`, `agents.conf`, and `livesync-bridge/config.json` are all gitignored while their `*.example` templates are tracked.
 
 ## Deployment
 
-Caddy provides automatic HTTPS and is the only piece meant for the VPS. It runs
-under the `prod` compose profile, so it never starts during local development.
+Caddy provides automatic HTTPS and is the only piece meant for the VPS.
+It runs under the `prod` compose profile, so it never starts during local development.
 
-Point five DNS A records at the VPS public IP before deploying:
-
-```
-example.com  hermes.example.com  n8n.example.com  router.example.com  couch.example.com
-```
-
-Then, on the VPS:
+Point your DNS A records at the VPS public IP before deploying, then:
 
 ```bash
 make deploy      # docker compose --profile prod up -d, then CouchDB init
@@ -456,11 +486,11 @@ Ingress map (see `caddy/Caddyfile`):
 | Hostname | Upstream | Notes |
 | --- | --- | --- |
 | `example.com` | static placeholder | nothing else live here yet |
-| `hermes.example.com` | `host.docker.internal:8642` | hermes runs on the host; uses its own gateway auth |
-| `n8n.example.com` | `n8n:5678` | automation UI and webhooks; uses n8n's owner-account login |
-| `router.example.com` | `keirouter:20180` | dashboard behind basic_auth; the `/v1` API is exempt so agents can use Bearer keys |
 | `couch.example.com` | `couchdb:5984` | LiveSync endpoint, uses CouchDB's own auth |
+| `ntfy.example.com` | `ntfy:80` | reminder alarms; deny-all, token required |
+| `router.example.com` | `keirouter:20180` | dashboard behind basic_auth |
+| `n8n.example.com` | `n8n:5678` | only if you start the `addon` profile |
 
-Caddy issues and renews Let's Encrypt certificates automatically. Every other
-service binds to localhost, so only Caddy is publicly reachable. The full
-deployment and hardening checklist is in [DEPLOY.md](DEPLOY.md).
+Caddy issues and renews Let's Encrypt certificates automatically.
+Every other service binds to localhost, so only Caddy is publicly reachable.
+The full deployment and hardening checklist is in [DEPLOY.md](DEPLOY.md).

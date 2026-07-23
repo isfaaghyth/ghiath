@@ -3,13 +3,15 @@
 # Local-first stack. Bring it up with:
 #   docker compose up -d
 #
-# The caddy service is gated behind the "prod" profile and is NOT started by
-# the plain `up` command. On the VPS, once DNS is pointed at the box, run:
-#   docker compose --profile prod up -d
+# Two services are gated behind compose profiles and are NOT started by the
+# plain `up` command:
+#   caddy  ("prod")   reverse proxy + HTTPS, VPS only:
+#                       docker compose --profile prod up -d
+#   n8n    ("addon")  optional automation canvas, nothing depends on it:
+#                       docker compose --profile addon up -d
 #
 # hermes-agent is intentionally NOT in this file. It runs on the host via
-# `hermes gateway start` per profile (default port 8642). See README section
-# "Hermes profiles".
+# `hermes gateway start` per profile. See README section "Hermes profiles".
 
 services:
   # ---------------------------------------------------------------------------
@@ -88,17 +90,17 @@ services:
       # Storage peers must live under data/ for the bridge to mount them. These
       # are read/write: the whole point is that it writes your devices' notes
       # back down to the disk the agents read.
-      - ./${PRIMARY_VAULT:-vault}:/app/data/${PRIMARY_VAULT:-vault}
+      - ./${WORK_VAULT:-vault-work}:/app/data/${WORK_VAULT:-vault-work}
       - ./${HOME_VAULT:-vault-home}:/app/data/${HOME_VAULT:-vault-home}
 
   # ---------------------------------------------------------------------------
   # ntfy - self-hosted push server for urgent reminder alarms on the phone.
   #
-  # The reminder-scheduler n8n workflow publishes here (internally at
-  # http://ntfy:80) when a vault reminder note comes due; the ntfy Android app,
-  # subscribed to the topic over https://ntfy.ghiath.id, rings until you tap
-  # Acknowledge. Config + auth model live in ./ntfy/server.yml. In prod Caddy
-  # proxies couch.ghiath.id-style at ntfy.ghiath.id (see caddy/Caddyfile).
+  # scripts/hermes-cron/reminder-tick.py publishes here (on the host loopback,
+  # 127.0.0.1:8080) when a vault reminder note comes due; the ntfy phone app,
+  # subscribed to the topic over https://ntfy.ghiath.id, rings until the
+  # acknowledge window elapses. Config + auth model live in ./ntfy/server.yml.
+  # In prod Caddy proxies it at ntfy.ghiath.id (see caddy/Caddyfile).
   # ---------------------------------------------------------------------------
   ntfy:
     image: binwiederhier/ntfy:latest
@@ -135,14 +137,14 @@ services:
       - ./qdrant:/qdrant/storage
 
   # ---------------------------------------------------------------------------
-  # Qdrant indexer - the vault watcher sidecar (Step 4).
-  # A small Python polling script: walks the primary vault, chunks changed .md
+  # Qdrant indexer (work) - the vault watcher sidecar.
+  # A small Python polling script: walks the work vault, chunks changed .md
   # files, embeds them locally with fastembed (no external API needed), and
   # upserts into Qdrant. Deliberately simple; see qdrant-indexer/indexer.py.
   #
-  # The vault folder and collection are configurable. They default to the same
-  # values as agents.conf.example; if you rename them in agents.conf, mirror
-  # PRIMARY_VAULT / PRIMARY_COLLECTION in .env so compose picks them up.
+  # The vault folder and collection are configurable in agents.conf. Run
+  # ./scripts/sync-env.sh --write after changing them, which projects them into
+  # .env where compose can read them.
   # ---------------------------------------------------------------------------
   qdrant-indexer:
     build: ./qdrant-indexer
@@ -152,28 +154,24 @@ services:
       - qdrant
     environment:
       QDRANT_URL: http://qdrant:6333
-      QDRANT_COLLECTION: ${PRIMARY_COLLECTION:-vault}
+      QDRANT_COLLECTION: ${WORK_COLLECTION:-vault_work}
       VAULT_PATH: /vault
       POLL_INTERVAL_SECONDS: "30"
     volumes:
-      - ./${PRIMARY_VAULT:-vault}:/vault:ro
+      - ./${WORK_VAULT:-vault-work}:/vault:ro
 
   # ---------------------------------------------------------------------------
   # Qdrant indexer (home) - the SAME image, pointed at the home vault.
-  # Full isolation from the primary vault: it only mounts the home vault folder
-  # and writes to a separate Qdrant collection. It physically cannot see the
-  # primary vault (never mounted here) and search cannot cross because the
-  # collections are distinct. The home agent is Telegram-only; no n8n.
-  #
-  # Opt-in via the "home" compose profile, so it never starts unless asked:
-  #   docker compose --profile home up -d
-  # (combine with --profile prod on the VPS if needed).
+  # Full isolation from the work vault: it only mounts the home vault folder and
+  # writes to a separate Qdrant collection. It physically cannot see the work
+  # vault (never mounted here) and search cannot cross, because the collections
+  # are distinct. That separation is the point - the household bot must never be
+  # able to surface a work note.
   # ---------------------------------------------------------------------------
   qdrant-indexer-home:
     build: ./qdrant-indexer
     container_name: ghiath-qdrant-indexer-home
     restart: unless-stopped
-    profiles: ["home"]
     depends_on:
       - qdrant
     environment:
@@ -210,15 +208,26 @@ services:
       - ./keirouter:/data
 
   # ---------------------------------------------------------------------------
-  # n8n - the automation / routing nervous system.
-  # Inbound messages (Telegram, Discord, web) hit n8n; it decides which hermes
-  # profile to call, calls it over the local gateway, and logs the result into
-  # the vault. The vault is mounted read/write at /data/vault.
+  # n8n - OPTIONAL automation canvas. An add-on, not part of the critical path.
+  #
+  # It used to be the router and the handoff watcher, back when Ghiath ran a
+  # team of agents. With a single agent per side there is nothing to route and
+  # nothing to hand off, and reminders now run on hermes's own cron (see
+  # scripts/hermes-cron/ and REMINDERS.md). So n8n owns no workflow here
+  # anymore; nothing breaks if it never starts.
+  #
+  # It is kept, behind the "addon" profile, purely as a canvas for whatever you
+  # want to wire up later:
+  #   docker compose --profile addon up -d
+  #
+  # Its data dir (./n8n) is untouched either way, so any workflow or credential
+  # you already created is still there when you start it again.
   # ---------------------------------------------------------------------------
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
     container_name: ghiath-n8n
     restart: unless-stopped
+    profiles: ["addon"]
     ports:
       # Loopback-only. Public access is via Caddy at n8n.ghiath.id.
       - "127.0.0.1:5678:5678"
@@ -235,27 +244,22 @@ services:
       N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
       N8N_RUNNERS_ENABLED: "true"
       GENERIC_TIMEZONE: Asia/Jakarta
-      # Agent -> {port, model, folder} map read by both workflows. Without it they
-      # fall back to the neutral template names and every route misses.
-      # Generate from agents.conf:  ./scripts/sync-env.sh --write
-      GHIATH_ROUTES: ${GHIATH_ROUTES:-}
-      # Used by the vault-notify workflow to push a delegated agent's finished
-      # result back into the chat. Same bot as the assistant: sending is a
-      # separate API call from receiving, so it does not fight the hermes bot.
+      # Handed through for convenience if you build something here later. None
+      # of it is required: no shipped workflow reads these.
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
-      # ntfy - the reminder-scheduler workflow publishes urgent alarms here.
-      # NTFY_URL is the in-cluster address; the token is created after first
-      # start (see REMINDERS.md) and authorizes publishing.
       NTFY_URL: ${NTFY_URL:-http://ntfy:80}
-      NTFY_TOPIC: ${NTFY_TOPIC:-ghiath-alarm}
+      NTFY_TOPIC: ${NTFY_TOPIC:-ghiath-work-alarm}
+      NTFY_HOME_TOPIC: ${NTFY_HOME_TOPIC:-ghiath-home-alarm}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
-    # Reach the host-only hermes gateway (default 8642) from inside n8n.
+    # Reach the host-only hermes gateway from inside n8n.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./n8n:/home/node/.n8n
-      - ./${PRIMARY_VAULT:-vault}:/data/vault
+      # Read-only: nothing in n8n owns the vault anymore, and a stray workflow
+      # must not be able to write into the agent's memory.
+      - ./${WORK_VAULT:-vault-work}:/data/vault:ro
 
   # ---------------------------------------------------------------------------
   # Caddy - reverse proxy + automatic HTTPS. PROD ONLY.

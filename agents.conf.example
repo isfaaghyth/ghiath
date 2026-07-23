@@ -9,57 +9,37 @@
 # NAME=value, no spaces around '='. Anything you set here overrides the
 # defaults baked into the scripts. Secrets stay in .env, not here.
 #
-# There are two independent "sides", each optional to customize:
-#   - The primary side: a small team of role agents (assistant, engineer,
-#     researcher) that hand off to each other through a shared vault.
-#   - The home side: a single, isolated everyday assistant with its own vault
-#     and no handoffs. Enable it with ENABLE_HOME=1.
+# There are exactly two agents, one per side of life. They are fully isolated:
+# separate hermes profiles, separate vaults, separate Qdrant collections,
+# separate Telegram bots. There are no handoffs and no router between them.
 
 # ---------------------------------------------------------------------------
-# Primary side - the role-agent team.
+# Work assistant - yours alone. Technical work, one capable model.
 # ---------------------------------------------------------------------------
+# NAME becomes the profile's CLI alias command. MODEL is the slug KeiRouter
+# serves. PORT is the gateway it listens on. VAULT is the Obsidian folder
+# (relative to the repo root) it owns, and COLLECTION its Qdrant collection.
+WORK_NAME="work"
+WORK_MODEL="z-ai/glm-5.1"
+WORK_PORT="8642"
+WORK_VAULT="vault-work"
+WORK_COLLECTION="vault_work"
 
-# The Obsidian vault folder (relative to the repo root) this side reads/writes,
-# and the Qdrant collection its indexer uses.
-PRIMARY_VAULT="vault"
-PRIMARY_COLLECTION="vault"
-
-# Each agent: NAME, the MODEL slug KeiRouter serves, the vault subfolder it owns
-# (its inbox + workspace), and the gateway PORT it listens on. Rename freely;
-# the name becomes that profile's CLI alias command.
-ASSISTANT_NAME="assistant"
-ASSISTANT_MODEL="deepseek/deepseek-v2-flash"
-ASSISTANT_FOLDER="scratchpads"
-ASSISTANT_PORT="8642"
-
-ENGINEER_NAME="engineer"
-ENGINEER_MODEL="anthropic/claude-opus-4-8"        # orchestrator, plans
-ENGINEER_SUBAGENT_MODEL="anthropic/claude-sonnet-5"  # subagents, execute
-ENGINEER_FOLDER="projects"
-ENGINEER_PORT="8643"
-
-RESEARCHER_NAME="researcher"
-RESEARCHER_MODEL="z-ai/glm-4.6"
-RESEARCHER_FOLDER="memory"
-RESEARCHER_PORT="8644"
-
-# Which agent is the Telegram front door for this side (must match one of the
-# NAME values above). Its bot token comes from TELEGRAM_BOT_TOKEN in .env.
-PRIMARY_TELEGRAM_AGENT="$ASSISTANT_NAME"
+# The work agent asks for confirmation over Telegram before it executes a
+# technical task. Set to 0 to let it act immediately instead.
+WORK_CONFIRM_GATE="1"
 
 # ---------------------------------------------------------------------------
-# Home side - a single, isolated everyday assistant (optional).
-# Enable by setting ENABLE_HOME=1 (here or in the environment).
+# Home assistant - shared with the household. Everyday tasks, fast cheap model.
 # ---------------------------------------------------------------------------
-ENABLE_HOME="0"
-
 HOME_NAME="home"
-HOME_MODEL="deepseek/deepseek-v2-flash"
+HOME_MODEL="deepseek/deepseek-v4-flash"
 HOME_PORT="8645"
-
-# Its own vault + collection, fully separate from the primary side.
 HOME_VAULT="vault-home"
 HOME_COLLECTION="vault_home"
 
-# Its Telegram bot token comes from HOME_TELEGRAM_BOT_TOKEN in .env (a SECOND
-# @BotFather bot, distinct from the primary side's).
+# Telegram bot tokens are secrets and live in .env, not here:
+#   WORK_TELEGRAM_BOT_TOKEN   (or TELEGRAM_BOT_TOKEN) -> the work agent
+#   HOME_TELEGRAM_BOT_TOKEN                           -> the home agent
+# They are two SEPARATE @BotFather bots, so the household bot can never reach
+# your work vault.

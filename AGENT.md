@@ -3,9 +3,9 @@
 These are the rules for any AI agent working inside this repository (the Ghiath
 personal agentic ecosystem).
 They adapt Isfa's global agent guidelines to this specific project.
-The agents, directories, and handoff mechanism here are different from the
-`/opt/data/.a2a/` setup used by Isfa's other agents, so follow this file, not
-that one, when working in this repo.
+The agents and directories here are different from the `/opt/data/.a2a/` setup
+used by Isfa's other agents, so follow this file, not that one, when working in
+this repo.
 
 ---
 
@@ -26,107 +26,133 @@ If you see one, even if it is not caused by what you are working on right now, s
 
 ---
 
-## 2. The Agents
+## 2. Scope: this is a light-usage project
 
-There is no single lead agent in this project unless Isfa asks for one later.
-n8n plays the role the TPM plays in Isfa's other setup: it is the router that
-decides which profile handles an incoming request.
-Each agent is a separate hermes profile with its own home directory, config,
-keys, memory, and gateway.
+Ghiath is deliberately small.
+It is two assistants, a notes vault, and the minimum glue needed to reach them from Telegram.
+There is no loop engineering here: no planner, no task graph, no retry or escalation
+logic, no orchestration across agents.
+The heavy, production-shaped version lives in a separate repo, `ghiath-loop`.
 
-| Agent | Role | Owns vault folder |
+When you are asked to add something here, the default answer is the smaller one.
+Prefer deleting a moving part over adding one.
+Machinery that only pays off at scale does not belong in this repo.
+
+---
+
+## 3. The Agents
+
+There are exactly two agents, one per side of life, and they are fully isolated
+from each other.
+Each is a separate hermes profile with its own home directory, config, keys,
+memory, and gateway.
+
+| Agent | Audience | Owns |
 | --- | --- | --- |
-| `assistant` | Lightweight everyday assistant. Fast, cheap, everyday tasks. | `vault/scratchpads/` |
-| `engineer` | Software engineer buddy. Plans with a strong model, executes with a fast one. | `vault/projects/` |
-| `researcher` | Researcher. Deep reading, synthesis, long-term notes. | `vault/memory/` |
+| work (`WORK_NAME`) | Isfa alone. Technical work. | `vault-work/` |
+| home (`HOME_NAME`) | Isfa and his wife. Everyday life. | `vault-home/` |
 
-Each profile's identity, owned folder, and handoff behaviour is also written
-into its `SOUL.md` under `~/.hermes/profiles/<name>/`.
+There is no router, no lead agent, and no handoffs between them.
+Each agent does its whole job itself.
+An earlier version of this project ran a team of three role agents behind an n8n
+router; that is gone, and nothing should reintroduce it.
 
-Agent names, models, vault folder names, and ports are configurable: copy
-`agents.conf.example` to `agents.conf` and edit it. The shipped defaults are the
-neutral names above.
+Names, models, ports, vault folders, and collections are configuration, not code:
+they live in `agents.conf` (gitignored; `agents.conf.example` is the template).
+Never hardcode an agent name, model slug, or vault path in a script.
 
----
-
-## 3. Routing and Orchestration
-
-- Inbound messages (Telegram, Discord, web, cron) arrive at **n8n**.
-- n8n inspects the request and routes it to the appropriate hermes profile by
-  calling that profile's local gateway (default port 8642) over its
-  OpenAI-compatible API (`POST /v1/chat/completions`).
-- The chosen agent reads and writes its owned vault folder, then n8n logs the
-  result back into the vault.
-- There is no TPM and no central task board. Routing lives in n8n workflows.
+Each profile's role is written into its `SOUL.md` by `scripts/hermes.sh`, inside
+a block delimited by `<!-- ghiath:role:begin -->` and `<!-- ghiath:role:end -->`.
+That block is regenerated on every run.
+To change what an agent believes about itself, edit the heredoc in `hermes.sh`
+and re-run it; do not hand-edit `SOUL.md`, because the next run overwrites it.
 
 ---
 
-## 4. Handoffs (the Obsidian vault, not a message bus)
+## 4. The isolation boundary
 
-This project does not use a separate `/opt/data/.a2a/` inbox/contracts/board
-structure.
-The handoff mechanism IS the Obsidian vault.
-Each agent owns one folder, and that folder is that agent's inbox and workspace:
+The two sides must never meet. This is a hard requirement, not a preference:
+the household agent is shared with another person, and the work vault is not.
 
-- `scratchpads/` - the assistant's inbox and workspace.
-- `projects/` - the engineer's inbox and workspace.
-- `memory/` - the researcher's inbox and workspace.
+Four things enforce it, and all four must stay true:
 
-**A handoff is a file write.**
-Agent A hands off to agent B by writing a note into agent B's folder.
-An n8n vault-watch workflow (or hermes's own scheduling) notices the new note
-and triggers agent B.
+1. Separate hermes profiles, so neither can read the other's config or memory.
+2. Separate vault directories, and each agent's `SOUL.md` names only its own
+   absolute path.
+3. Separate Qdrant collections, so semantic search cannot cross.
+   The home indexer only mounts the home vault; it physically cannot see the
+   work one.
+4. Separate CouchDB databases and separate Telegram bots, so a household device
+   or chat has no path to work notes.
 
-**Every note carries front-matter.**
-This is what makes handoffs loop-safe and powers the Obsidian Bases views on
-the dashboard.
-Each Markdown note an agent writes MUST begin with:
-
-```
----
-type: task        # task | brief | result | note
-status: open      # open | doing | done
-owner: <agent>    # the agent who should act next
-from: <agent>     # who created the note
-created: YYYY-MM-DD
-tags: []
----
-```
-
-The vault-watch workflow only triggers on notes whose `status` is `open`.
-An agent's own output is written as `type: result` with `status: done`, so it
-never re-triggers itself.
-When an agent picks up an open note it sets `status: doing`, then `done` when
-finished.
-A note with no front-matter is treated as a human-created open task.
-
-Example flow:
-
-1. The assistant receives a vague request and writes a research brief into `memory/`.
-2. The vault-watch workflow notices the new note and triggers the researcher.
-3. The researcher researches, writes its findings into `memory/`, and drops a note
-   into `projects/` when something needs to be built.
-4. The vault-watch workflow notices that note and triggers the engineer.
-5. The engineer plans and implements, writing progress into `projects/`.
-
-Keep handoff notes plain and self-contained.
-The note itself is the contract: state what you did, what you need, and which
-agent should pick it up next.
-
-The same qdrant-indexer sidecar that powers semantic search also watches the
-vault, so anything written for a handoff is embedded into Qdrant and becomes
-searchable by every agent.
+Before changing anything in `docker-compose.yml`, `sync-env.sh`, or `hermes.sh`,
+check that you have not created a fifth path between the two sides.
 
 ---
 
-## 5. Skills
+## 5. The confirmation gate
+
+The work agent must not execute a technical task without explicit confirmation
+from Isfa over Telegram.
+The rule is written into its `SOUL.md` by `scripts/hermes.sh` and is controlled
+by `WORK_CONFIRM_GATE` in `agents.conf`.
+
+The protocol is: plan out loud, ask, wait, then execute exactly the plan that was
+confirmed.
+Reads, searches, explanations, and planning are not gated.
+One confirmation covers one plan and never becomes standing permission.
+
+If you are editing that text, keep it unambiguous and keep the literal
+confirmation line intact.
+A gate that the agent can talk itself out of is not a gate.
+
+---
+
+## 6. Persistence: never cost the user state
+
+Deploying an update must never invalidate a Telegram session, drop a hermes
+session, or touch a note.
+Three invariants protect that, and changes to the setup scripts must preserve
+all three:
+
+- **`scripts/hermes.sh` is non-destructive by default.**
+  It creates a profile only when missing and otherwise reconfigures in place.
+  It must never call `hermes profile delete` outside the opt-in, interactive
+  `--reset` path, because deleting a profile wipes `sessions/`, `memories/`, and
+  the per-profile `.env` that holds the Telegram bot token.
+- **Vault seeding is additive.**
+  The `seed` helper skips any file that already exists. Never make it overwrite.
+- **Every vault is gitignored** via the `vault*/` pattern.
+  A vault folder must never become tracked, whatever it is named. Notes are
+  private, and a tracked vault would push them to a public remote.
+
+If a change would make any of these false, it is the wrong change.
+
+---
+
+## 7. Scheduling: hermes cron, not n8n
+
+Anything recurring runs on hermes's own cron, driven by a tick script in
+`scripts/hermes-cron/`.
+`scripts/seed-cron.sh` copies those scripts to `~/.hermes/scripts/`, where
+`hermes cron --script <name>` resolves them.
+
+A tick script runs with `--no-agent`, so it is plain Python with no LLM in the
+loop. Under `--deliver telegram`, **stdout is sent to the chat** and stderr is
+not, so log to stderr and print only what the user should actually receive.
+
+n8n is still in `docker-compose.yml` behind the `addon` compose profile, but it
+owns no workflow and nothing depends on it.
+Do not move scheduled work back into it.
+
+---
+
+## 8. Skills
 
 Each hermes profile has its own skills directory:
 
 ```
-~/.hermes/profiles/assistant/skills/
-~/.hermes/profiles/engineer/skills/
-~/.hermes/profiles/researcher/skills/
+~/.hermes/profiles/<agent>/skills/
 ```
 
 Before starting a task, check whether a relevant skill exists for the active
@@ -137,61 +163,79 @@ find ~/.hermes/profiles/<name>/skills -name "SKILL.md"
 ```
 
 Read the `SKILL.md` before proceeding.
-Skills are per-profile here, not shared from a single `/opt/data/skills/`
-directory, because each agent is an isolated hermes profile.
+Skills are per-profile here, not shared from a single directory, because each
+agent is an isolated hermes profile.
+
+Two sources are seeded into both agents by `scripts/hermes.sh`:
+
+- `skills/` - shared, tracked in git.
+- `skills-local/` - private, gitignored. Personal or proprietary content that
+  must never be pushed. The data it reads lives outside this repo entirely.
 
 ---
 
-## 6. Secrets
+## 9. Notes and the vault
 
-- `.env` and all runtime data folders (`n8n/`, `keirouter/`, `couchdb/`,
-  `qdrant/`, `caddy/data/`, `vault/`) are gitignored.
-- Never commit real keys.
-- `.env.example` is the template.
-  Copy it to `.env` and fill in real values locally.
-- KeiRouter's master key must be a base64-encoded 32-byte value
-  (`openssl rand -base64 32`), not an arbitrary string.
+Each agent owns one vault and writes plain Markdown into it.
+Every note begins with front-matter, which is what the Obsidian Bases views on
+the dashboard read:
 
+```
 ---
+type: task        # task | result | note
+status: open      # open | doing | done
+owner: <agent>
+from: <agent>
+created: YYYY-MM-DD
+tags: []
+---
+```
 
-## 7. Dashboard and Tasks
+Two Bases are seeded next to each dashboard:
 
-The vault dashboard lives at `vault/000-Dashboard.md`.
-It is intentionally lightweight: a quick-capture area plus embedded Obsidian
-Bases views.
-The observability comes from the Bases, not from the note itself, so you rarely
-edit the dashboard by hand.
+- `tasks.base` - every note with `type: task` and `status` not `done`.
+- `activity.base` - everything that is not a plain `note`, newest first.
 
-Two Bases are seeded alongside it:
-
-- `tasks.base` - every note with `type: task` and `status` not `done`, i.e. the
-  open work across `scratchpads/`, `projects/`, and `memory/`.
-- `activity.base` - everything the agents have produced (anything that is not a
-  plain `note`), newest first.
-
-Both query the front-matter defined in section 4, so the single requirement is
-that every note carries that front-matter.
 There is no separate task syntax to remember: `status` and `type` in the
 front-matter are what the Bases read.
 
+The qdrant-indexer sidecar embeds everything written into the vault, so notes
+become semantically searchable by the agent that owns them.
+
 ---
 
-## 8. Production Ingress Map
+## 10. Secrets
+
+- `.env`, `agents.conf`, `livesync-bridge/config.json`, `skills-local/`, and all
+  runtime data folders (`n8n/`, `keirouter/`, `couchdb/`, `qdrant/`,
+  `caddy/data/`, `vault*/`) are gitignored.
+- Never commit real keys.
+- `.env.example` and `agents.conf.example` are the templates.
+- KeiRouter's master key must be a base64-encoded 32-byte value
+  (`openssl rand -base64 32`), not an arbitrary string.
+- `scripts/sync-env.sh` owns a managed block in `.env`. Everything it writes is
+  derived config, never a secret. Do not put a secret inside that block; it is
+  regenerated.
+
+---
+
+## 11. Production Ingress Map
 
 On the VPS, Caddy terminates TLS and reverse-proxies each subdomain.
-Four DNS A records must point at the VPS public IP before this works.
-
-| Hostname | Upstream | Notes |
-| --- | --- | --- |
-| `ghiath.id` | static `respond "hello world"` | placeholder for now |
-| `hermes.ghiath.id` | `host.docker.internal:8642` | hermes runs host-only; gateway default port 8642 |
-| `n8n.ghiath.id` | `n8n:5678` | automation UI and webhooks |
-| `router.ghiath.id` | `keirouter:20180` | KeiRouter API and dashboard (same port in Docker) |
-
-Caddy issues and renews Let's Encrypt certificates automatically the first time
-each hostname is requested.
-It runs only under the `prod` compose profile:
+DNS A records must point at the VPS public IP before this works.
+Caddy runs only under the `prod` compose profile:
 
 ```bash
 docker compose --profile prod up -d
 ```
+
+| Hostname | Upstream | Notes |
+| --- | --- | --- |
+| `ghiath.id` | static placeholder | nothing else live here yet |
+| `couch.ghiath.id` | `couchdb:5984` | LiveSync endpoint, CouchDB's own auth |
+| `ntfy.ghiath.id` | `ntfy:80` | reminder alarms, deny-all + token |
+| `router.ghiath.id` | `keirouter:20180` | KeiRouter API and dashboard |
+| `n8n.ghiath.id` | `n8n:5678` | only if the `addon` profile is started |
+
+Caddy issues and renews Let's Encrypt certificates automatically the first time
+each hostname is requested.
