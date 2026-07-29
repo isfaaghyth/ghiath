@@ -7,7 +7,7 @@
 > If you push heavy or long-running agentic work through it, it will disappoint you, and that is by design rather than by neglect.
 >
 > **Want the serious version?**
-> If you need an advanced technical agentic workflow with real loop engineering, use [**ghiath-loop**](https://github.com/isfaaghyth/ghiath-loop) instead.
+> If you need an advanced technical agentic workflow with real loop engineering, use [**ghiath-loop**](https://github.com/isfaaghyth/pang) instead.
 > That is where the extensive, production-shaped work lives.
 
 A self-hosted, local-first pair of AI assistants backed by a long-term memory vault, a semantic search layer, and cross-device sync, all running on your own hardware.
