@@ -344,23 +344,23 @@ docker compose exec ntfy ntfy token add ghiath               # prints tk_...
 # put that tk_... value in .env as NTFY_TOKEN
 
 # 2. Your phone: access to both topics.
-docker compose exec ntfy ntfy user add isfa
-docker compose exec ntfy ntfy access isfa ghiath-work-alarm rw
-docker compose exec ntfy ntfy access isfa ghiath-home-alarm rw
+docker compose exec ntfy ntfy user add me
+docker compose exec ntfy ntfy access me ghiath-work-alarm rw
+docker compose exec ntfy ntfy access me ghiath-home-alarm rw
 
 # 3. Your partner's phone: the household topic and nothing else.
-docker compose exec ntfy ntfy user add rumah
-docker compose exec ntfy ntfy access rumah ghiath-home-alarm rw
+docker compose exec ntfy ntfy user add partner
+docker compose exec ntfy ntfy access partner ghiath-home-alarm rw
 ```
 
 Check the result with `docker compose exec ntfy ntfy access`.
-The `rumah` account should show only `ghiath-home-alarm`.
+The `partner` account should show only `ghiath-home-alarm`.
 
 Then, on each phone:
 
 1. Install **ntfy** from the Play Store or App Store.
 2. Open **Settings, Default server** and set it to your public URL, e.g. `https://ntfy.ghiath.id`. This must be the HTTPS domain, not the loopback address.
-3. Open **Settings, Manage users**, then **Add user**: the server URL, plus the username and password from above (`isfa` on your phone, `rumah` on your partner's).
+3. Open **Settings, Manage users**, then **Add user**: the server URL, plus the username and password from above (`me` on your phone, `partner` on your partner's).
 4. Subscribe to the topics that account is allowed to read:
    - your phone: `ghiath-work-alarm` **and** `ghiath-home-alarm`
    - your partner's phone: `ghiath-home-alarm` only

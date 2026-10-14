@@ -18,13 +18,13 @@
 #   docker compose exec ntfy ntfy token add ghiath      # -> .env NTFY_TOKEN
 #
 #   # your phone: both topics
-#   docker compose exec ntfy ntfy user add isfa
-#   docker compose exec ntfy ntfy access isfa ghiath-work-alarm rw
-#   docker compose exec ntfy ntfy access isfa ghiath-home-alarm rw
+#   docker compose exec ntfy ntfy user add me
+#   docker compose exec ntfy ntfy access me ghiath-work-alarm rw
+#   docker compose exec ntfy ntfy access me ghiath-home-alarm rw
 #
 #   # household phone: the home topic and nothing else
-#   docker compose exec ntfy ntfy user add rumah
-#   docker compose exec ntfy ntfy access rumah ghiath-home-alarm rw
+#   docker compose exec ntfy ntfy user add partner
+#   docker compose exec ntfy ntfy access partner ghiath-home-alarm rw
 #
 # base-url is intentionally NOT set here - it is domain-specific, so it comes
 # from the environment (NTFY_BASE_URL in .env, wired through docker-compose.yml).

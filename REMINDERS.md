@@ -84,18 +84,18 @@ sudo docker compose exec ntfy ntfy user add --role=admin ghiath   # set a passwo
 sudo docker compose exec ntfy ntfy token add ghiath               # prints tk_...
 
 # b) Your phone: both topics.
-sudo docker compose exec ntfy ntfy user add isfa
-sudo docker compose exec ntfy ntfy access isfa ghiath-work-alarm rw
-sudo docker compose exec ntfy ntfy access isfa ghiath-home-alarm rw
+sudo docker compose exec ntfy ntfy user add me
+sudo docker compose exec ntfy ntfy access me ghiath-work-alarm rw
+sudo docker compose exec ntfy ntfy access me ghiath-home-alarm rw
 
 # c) Your partner's phone: the household topic and nothing else. This grant is
 #    the thing that keeps work alarms off that device.
-sudo docker compose exec ntfy ntfy user add rumah
-sudo docker compose exec ntfy ntfy access rumah ghiath-home-alarm rw
+sudo docker compose exec ntfy ntfy user add partner
+sudo docker compose exec ntfy ntfy access partner ghiath-home-alarm rw
 ```
 
 Verify with `sudo docker compose exec ntfy ntfy access`.
-The `rumah` account must show `ghiath-home-alarm` and nothing else.
+The `partner` account must show `ghiath-home-alarm` and nothing else.
 
 Put the publish token and the topics in `.env`, which is where the tick script
 reads them from:
@@ -114,7 +114,7 @@ Do this on both phones, using that phone's own account.
 2. **Settings, Default server**: `https://ntfy.ghiath.id`.
    It must be the public HTTPS domain, not a loopback address.
 3. **Settings, Manage users, Add user**: the server URL plus the username and
-   password for this phone (`isfa` on yours, `rumah` on your partner's).
+   password for this phone (`me` on yours, `partner` on your partner's).
 4. Subscribe to the topics that account may read:
    - your phone: `ghiath-work-alarm` and `ghiath-home-alarm`
    - your partner's phone: `ghiath-home-alarm` only
